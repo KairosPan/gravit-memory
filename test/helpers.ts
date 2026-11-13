@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
@@ -39,4 +39,33 @@ function at(iso: string): number {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) throw new Error(`clock: not a date: ${iso}`);
   return t;
+}
+
+/** The stand-in card: the only lesson text the repository holds. */
+export const STAND_IN_CARD = `---
+id: no-chasing-after-a-run
+says: dont
+actions: [buy, add]
+strength: caveat
+scope:
+  market: [US]
+check:
+  - { fact: sector, op: in, value: [semiconductors, software] }
+  - { fact: change_5d_pct, op: ">=", value: 20 }
+facts:
+  sector: the stock's sector, as the price source's listing names it
+  change_5d_pct: today's close over the close five sessions earlier, minus 1, in percent
+source: ["owner, 2026-01-05"]
+---
+No new position in a name that ran 20% in five sessions.
+`;
+
+/** Writes a card's text to lessons/<id>.md, the id read from its front matter, and returns the id. */
+export async function writeCard(home: string, text: string = STAND_IN_CARD): Promise<string> {
+  const id = /^id:\s*(\S+)\s*$/m.exec(text)?.[1];
+  if (id === undefined) throw new Error("writeCard: the text names no id");
+  const file = join(home, "lessons", `${id}.md`);
+  await writeFile(file, text, { mode: 0o600 });
+  if (process.platform !== "win32") await chmod(file, 0o600);
+  return id;
 }
