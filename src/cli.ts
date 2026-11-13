@@ -11,9 +11,10 @@
 // the tool's: a label, then the value beneath behind a fence, "  | " on each of its lines (`fence`). Only validated
 // identifiers stay inline (`ident`: ids, lesson ids, agents' names, enum words, ISO times; anything else shows as "?").
 // Every word that reaches the terminal then passes `visible`, so no control, format or separator character hides or
-// reorders what is shown, and `rows`, which cuts every line to the terminal's width (East Asian wide characters
-// count 2) and puts each further row behind the fence: so no part of a stored value reaches column zero, and none can
-// pose as a question or a result, however the terminal would have wrapped it.
+// reorders what is shown, and `rows`, which cuts every line to the terminal's width as it is at that moment (every
+// character but printable ASCII counted 2 columns, never fewer than a terminal draws) and puts each further row behind
+// the fence: so no part of a stored value reaches column zero, and none can pose as a question or a result, however
+// the terminal would have wrapped it. An owner's act refuses a terminal too narrow to show the fence and some text.
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -33,12 +34,15 @@ import { runMcp } from "./mcp.js";
 import { ACTIONS } from "./schema.js";
 import type { Card, Deps, ProposalLine } from "./types.js";
 
-/** The terminal: `columns` its width (the real one gives process.stdout.columns; 80 when not given, never under 40). */
+/**
+ * The terminal: `columns` its width now, read again at every line written or asked (the real one is a getter over
+ * process.stdout.columns, undefined when it is not a terminal); 80 is taken when it gives none.
+ */
 export interface Io { out(text: string): void; err(text: string): void; isTTY: boolean; ask(question: string): Promise<string>;
   env: NodeJS.ProcessEnv; columns?: number }
 
 /** The Io the commands write through: every line made visible and cut to the width; `json` is a document, uncut. */
-interface Door extends Io { columns: number; json(text: string): void }
+interface Door extends Io { json(text: string): void }
 
 interface Command { usage: string; what: string; id?: string; json?: true; reason?: true; owner?: true }
 
@@ -68,7 +72,8 @@ const WRITER = new RegExp(`^owner$|${AGENT_NAME.source}`);
 const ACTION = new RegExp(`^(${ACTIONS.join("|")})$`);
 const WHOSE = /^(owner|agent)$/;
 const DEFAULT_COLUMNS = 80;
-const MIN_COLUMNS = 40;
+/** The narrowest terminal an owner's act runs on: the fence and some text on each row. */
+const OWNER_COLUMNS = 20;
 const OWNERS_ACT = "this is the owner's act: run it at a terminal";
 const NOTHING = "nothing changed";
 
@@ -113,38 +118,38 @@ function ident(value: unknown, pattern: RegExp): string {
   return typeof value === "string" && value.length <= 64 && pattern.test(value) ? value : "?";
 }
 
-/** The terminal's width: the Io's when it gives a sound one, else 80; never under 40. */
+/** The terminal's width: the Io's when it gives a sound one, else 80. Never more than the terminal reports. */
 function columnsOf(columns: number | undefined): number {
-  return Math.max(MIN_COLUMNS, columns !== undefined && Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : DEFAULT_COLUMNS);
+  return columns !== undefined && Number.isFinite(columns) && columns >= 1 ? Math.floor(columns) : DEFAULT_COLUMNS;
 }
 
-/** Columns a code point takes: 2 for East Asian wide and fullwidth characters (and every one above the BMP), else 1. */
+/**
+ * Columns a code point is counted as: 1 for printable ASCII, 2 for every other, wide, ambiguous or combining alike.
+ * No terminal draws one wider, so a row counted to fit is never wrapped by the terminal; counting over only cuts early.
+ */
 export function charWidth(cp: number): number {
-  if (cp > 0xffff) return 2;
-  return (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x231a && cp <= 0x231b) || (cp >= 0x2329 && cp <= 0x232a)
-    || (cp >= 0x23e9 && cp <= 0x23f3) || (cp >= 0x25fd && cp <= 0x25fe) || (cp >= 0x2614 && cp <= 0x2615)
-    || (cp >= 0x2648 && cp <= 0x2653) || (cp >= 0x267f && cp <= 0x26ff) || (cp >= 0x2705 && cp <= 0x27bf)
-    || (cp >= 0x2b1b && cp <= 0x2b55) || (cp >= 0x2e80 && cp <= 0x303e) || (cp >= 0x3041 && cp <= 0xa4cf)
-    || (cp >= 0xa960 && cp <= 0xa97f) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff)
-    || (cp >= 0xfe10 && cp <= 0xfe19) || (cp >= 0xfe30 && cp <= 0xfe6f) || (cp >= 0xff00 && cp <= 0xff60)
-    || (cp >= 0xffe0 && cp <= 0xffe6) ? 2 : 1;
+  return cp >= 0x20 && cp <= 0x7e ? 1 : 2;
 }
 
 /**
  * The text as the rows of a terminal `columns` wide: a line wider than that is cut, and each further row of it
- * carries the fence, so nothing of a line but its own start reaches column zero.
+ * carries the fence, so nothing of a line but its own start reaches column zero. On a terminal too narrow for the
+ * fence and a character (only a read prints there), a further row goes without it, one character at worst.
  */
 export function rows(text: string, columns: number): string {
+  const lead = columns >= FENCE.length + 2 ? FENCE : "";
   return text.split("\n").map((line) => {
     const out: string[] = [];
     let row = "";
     let width = 0;
+    let start = 0;
     for (const ch of line) {
       const w = charWidth(ch.codePointAt(0)!);
-      if (width + w > columns) {
+      if (width + w > columns && width > start) {
         out.push(row);
-        row = FENCE;
-        width = FENCE.length;
+        row = lead;
+        width = lead.length;
+        start = width;
       }
       row += ch;
       width += w;
@@ -169,9 +174,8 @@ function fault(io: Door, head: string, message: string): void {
 
 /** Runs one command line; the answer is the exit code: 0 done, 1 nothing changed or a refusal, 2 misuse. */
 export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<number> {
-  const columns = columnsOf(raw.columns);
-  const shown = (t: string): string => rows(visible(t), columns);
-  const io: Door = { isTTY: raw.isTTY, env: raw.env, columns, out: (t) => raw.out(shown(t)), err: (t) => raw.err(shown(t)),
+  const shown = (t: string): string => rows(visible(t), columnsOf(raw.columns));   // the width as it is now
+  const io: Door = { isTTY: raw.isTTY, env: raw.env, out: (t) => raw.out(shown(t)), err: (t) => raw.err(shown(t)),
     ask: (q) => raw.ask(shown(q)), json: (t) => raw.out(visible(t)) };
   const [name, ...rest] = argv;
   const cmd = name !== undefined && Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
@@ -212,6 +216,10 @@ export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<numb
   const reason = values.reason?.trim();
   if (cmd.reason && !reason) return misuse("--reason <words> is required: say why.");
   if (cmd.owner && !io.isTTY) { io.err(`gravit-memory ${name}: ${OWNERS_ACT}`); return 2; }
+  if (cmd.owner && columnsOf(raw.columns) < OWNER_COLUMNS) {
+    io.err(`gravit-memory ${name}: the terminal is too narrow: widen it to ${OWNER_COLUMNS} columns or more.`);
+    return 2;
+  }
 
   const home = values.home ?? resolveHome(io.env);
   const id = positionals[0] ?? "";
@@ -655,7 +663,7 @@ export function makeAsk(input: Readable, output: Writable): (question: string) =
 
 function processIo(): Io {
   return {
-    columns: process.stdout.columns,
+    get columns() { return process.stdout.isTTY ? process.stdout.columns : undefined; },
     out: (text) => { process.stdout.write(`${text}\n`); },
     err: (text) => { process.stderr.write(`${text}\n`); },
     isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
@@ -685,7 +693,7 @@ export function isEntry(argv1: string | undefined, moduleUrl: string, platform: 
 
 if (isEntry(process.argv[1], import.meta.url, process.platform)) {
   runCli(process.argv.slice(2), processIo()).then((code) => { process.exitCode = code; }, (err: unknown) => {
-    process.stderr.write(`gravit-memory failed:\n${rows(visible(fence(err instanceof Error ? err.message : String(err))), columnsOf(process.stderr.columns))}\n`);
+    process.stderr.write(`gravit-memory failed:\n${rows(visible(fence(err instanceof Error ? err.message : String(err))), columnsOf(process.stderr.isTTY ? process.stderr.columns : undefined))}\n`);
     process.exitCode = 1;
   });
 }

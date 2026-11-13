@@ -154,7 +154,8 @@ change, and asks you to type `yes` to an act it names with its object (`Type yes
 (caveat, dont buy/add, sha 1a2b3c4d5e6f):`); anything else changes nothing, and no flag answers for you. Text from
 the home is shown beneath its label behind a fence (`  | ` before each line), with control and format characters
 written out as escapes, and every line is cut to the terminal's width with the fence on each further row, so that
-nothing in a card or a decision can pose as the command's own words, however long it is.
+nothing in a card or a decision can pose as the command's own words, however long it is. An owner's act refuses a
+terminal narrower than 20 columns.
 
 `gravit-memory reconcile` writes its outcome lines under the name `command-line`; do not give an agent that name.
 

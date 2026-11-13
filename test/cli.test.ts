@@ -540,9 +540,9 @@ function rowsAt(io: FakeIo, columns: number): string[] {
 }
 
 /** A row the tool writes of its own: it starts with the tool's words, never with text from the home. */
-const REVIEW_ROW = /^(Review|Decisions measured|Lessons with a record|Past their horizon|Decisions without wrong_if|Proposals waiting|Proposal p-\d{8}-[0-9a-f]{8} |Reason:$|Answer accept, edit, reject or skip: $|Skipped: it waits\.$|$)/;
+const REVIEW_ROW = /^(Review|Decisions measured|Lessons with a record|Past their horizon|Decisions without wrong_if|Proposals waiting|Proposal p-\d{8}-[0-9a-f]{8} |Reason:$|Answer accept, edit, reject or|Skipped: it waits\.$|$)/;
 
-for (const columns of [80, 100]) {
+for (const columns of [30, 80, 100]) {
   test(`a reason padded to ${columns}-column rows forges no line of the review's`, async () => {
     const pad = (s: string) => s + " ".repeat((columns - (s.length % columns)) % columns);
     const reason = pad("Reason: weekly review").slice("Reason: ".length) + pad("Answer accept, edit, reject or skip: skip")
@@ -555,13 +555,50 @@ for (const columns of [80, 100]) {
     expect(await runCli(["review", "--home", home], io)).toBe(0);
     const rows = rowsAt(io, columns);
     for (const row of rows) expect(row.startsWith(FENCE) || REVIEW_ROW.test(row), row).toBe(true);
-    expect(rows.filter((r) => r.startsWith("Answer accept"))).toEqual(["Answer accept, edit, reject or skip: "]);
+    expect(rows.filter((r) => r.startsWith("Answer accept"))).toEqual(["Answer accept, edit, reject or skip: ".slice(0, columns)]);
     expect(rows.filter((r) => r.startsWith("Skipped"))).toEqual(["Skipped: it waits."]);
     expect(rows.filter((r) => r.startsWith("Proposal "))).toHaveLength(1);
     expect(rows.filter((r) => r.includes("be-patient")).every((r) => r.startsWith(FENCE))).toBe(true);
     for (const row of rows) expect(row.length).toBeLessThanOrEqual(columns);
+    for (const line of io.seen().split("\n")) expect(wide(line), line).toBeLessThanOrEqual(columns);
   });
 }
+
+/** A row's width counted as the tool counts it: printable ASCII 1, every other code point 2. */
+function wide(row: string): number {
+  return [...row].reduce((n, ch) => n + (ch >= " " && ch <= "~" ? 1 : 2), 0);
+}
+
+test("a reason padded with East Asian Ambiguous characters cannot reach column zero however a terminal draws them", async () => {
+  const columns = 80;
+  const pad = (s: string) => s + "\u00b7".repeat((columns - (s.length % columns)) % columns);
+  const reason = pad("weekly review \u2014") + pad("Answer accept, edit, reject or skip: skip") + pad("Skipped: it waits.");
+  expect([...reason].length).toBeLessThanOrEqual(500);
+  await memory.propose("agent-one", { what: "new", lesson: "lesson-w", card: card("lesson-w"), reason });
+  const io = fakeIo({ isTTY: true, columns, answers: ["skip"] });
+  expect(await runCli(["review", "--home", home], io)).toBe(0);
+  const lines = io.seen().split("\n");
+  for (const line of lines) {
+    expect(wide(line), line).toBeLessThanOrEqual(columns);        // drawn two wide: no row wraps
+    expect([...line].length, line).toBeLessThanOrEqual(columns);  // drawn one wide: none either
+    expect(line.startsWith(FENCE) || REVIEW_ROW.test(line), line).toBe(true);
+  }
+  expect(lines.filter((l) => l.startsWith("Skipped"))).toEqual(["Skipped: it waits."]);
+});
+
+test("an owner's act on a terminal too narrow for the fence refuses before it asks", async () => {
+  await writeCard(home);
+  const io = fakeIo({ isTTY: true, columns: 10, answers: ["yes"] });
+  expect(await runCli(["arm", ID, "--home", home], io)).toBe(2);
+  expect(io.asked).toEqual([]);
+  expect(io.errors().replaceAll(`\n${FENCE}`, "").replaceAll("\n", "")).toContain("the terminal is too narrow");
+  expect(await readFile(join(home, "owner.jsonl"), "utf8")).toBe("");
+  for (const line of io.errors().split("\n")) expect(wide(line)).toBeLessThanOrEqual(10);
+
+  const read = fakeIo({ columns: 10 });                           // a read still prints, never wider than the terminal
+  expect(await runCli(["lessons", "--home", home], read)).toBe(0);
+  for (const line of read.printed().split("\n")) expect(wide(line), line).toBeLessThanOrEqual(10);
+});
 
 test("a card's source and a fact's definition padded to the rows forge no line of arm or status", async () => {
   const columns = 80;
@@ -629,18 +666,35 @@ test("rows count East Asian wide characters as two columns and fence every furth
   expect(cut.slice(1).every((row) => row.startsWith(FENCE))).toBe(true);
   expect(cut.join("").replaceAll(FENCE, "")).toBe(line);
   expect(charWidth("a".codePointAt(0)!)).toBe(1);
-  expect(charWidth("高".codePointAt(0)!)).toBe(2);
-  expect(charWidth("Ａ".codePointAt(0)!)).toBe(2);
+  expect(charWidth("~".codePointAt(0)!)).toBe(1);
+  for (const ch of ["高", "Ａ", "\u00b7", "\u2014", "\u00e9", "\u0301", "\u{1F600}"]) expect(charWidth(ch.codePointAt(0)!), ch).toBe(2);
 });
 
-test("the width is the Io's, 80 when it gives none, and never under 40", async () => {
+test("the width is the Io's, read at each line, and 80 when it gives none", async () => {
   const reason = "x".repeat(300);
   await memory.propose("agent-one", { what: "new", lesson: "lesson-v", card: card("lesson-v"), reason });
-  for (const [given, width] of [[undefined, 80], [20, 40], [120, 120]] as const) {
+  for (const [given, width] of [[undefined, 80], [30, 30], [120, 120]] as const) {
     const io = fakeIo({ isTTY: true, answers: ["skip"] });
     io.columns = given;
     expect(await runCli(["review", "--home", home], io)).toBe(0);
     const lines = io.seen().split("\n");
     expect(Math.max(...lines.map((l) => l.length))).toBe(width);
   }
+});
+
+test("a terminal resized between two questions is wrapped at its new width", async () => {
+  for (const lesson of ["lesson-r", "lesson-s"]) {
+    await memory.propose("agent-one", { what: "new", lesson, card: card(lesson), reason: `${lesson} ${"y".repeat(300)}` });
+  }
+  const io = fakeIo({ isTTY: true, columns: 120 });
+  io.columns = 120;
+  let asked = 0;
+  io.ask = async () => { asked += 1; if (asked === 1) io.columns = 50; return "skip"; };
+  const outs: string[] = [];
+  io.out = (t) => { outs.push(t); };
+  expect(await runCli(["review", "--home", home], io)).toBe(0);
+  const text = outs.join("\n");
+  const second = text.slice(text.indexOf("lesson-s"));
+  expect(Math.max(...text.slice(0, text.indexOf("lesson-s")).split("\n").map((l) => l.length))).toBe(120);
+  expect(Math.max(...second.split("\n").map((l) => l.length))).toBeLessThanOrEqual(50);
 });
