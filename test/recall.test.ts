@@ -6,7 +6,7 @@ import type { Code } from "../src/errors.js";
 import { DEFAULT_CONFIG } from "../src/home.js";
 import { appendLine, readLog } from "../src/log.js";
 import { arm } from "../src/owner.js";
-import { recall, type AppliedCard, type PastDecision, type RecallAnswer } from "../src/recall.js";
+import { recall, type AppliedCard, type PastDecision, type RecallAnswer, type UntoldCard } from "../src/recall.js";
 import type { CardRecord } from "../src/records.js";
 import { FRAME, renderRecall } from "../src/render.js";
 import { RECALL_MAX_BYTES } from "../src/limits.js";
@@ -262,6 +262,28 @@ test("the 4,000 bytes hold, and a card's words are never cut", async () => {
   expect(a.applies.length).toBeGreaterThan(0);
 });
 
+test("untold lessons yield before any applying card", async () => {
+  const words = "涨".repeat(200);
+  for (const id of ["card-a", "card-b", "card-c"]) await armCard(id, { words });
+  await armCard("card-x", { strength: "red-line", words });
+  await armCard("card-y", { strength: "red-line", words });
+  const definition = "义".repeat(500);
+  for (const id of ["untold-a", "untold-b", "untold-c", "untold-d", "untold-e"]) {
+    const text = STAND_IN_CARD.replace("id: no-chasing-after-a-run", `id: ${id}`)
+      .replace("  - { fact: change_5d_pct, op: \">=\", value: 20 }\n", "  - { fact: change_5d_pct, op: \">=\", value: 20 }\n  - { fact: pe, op: \">\", value: 50 }\n")
+      .replace("facts:\n", `facts:\n  pe: ${definition}\n`);
+    await writeCard(home, text);
+    await arm(home, id, c.now());
+  }
+  const a = await recall(home, "agent-one", ask, deps);
+  expect(Buffer.byteLength(a.text)).toBeLessThanOrEqual(4000);
+  expect(a.untold.length + a.untold_more).toBe(5);
+  expect(a.applies.length + a.applies_more).toBe(5);
+  expect(a.applies.slice(0, 2).map((x) => x.id)).toEqual(["card-x", "card-y"]);
+  for (const card of a.applies) expect(a.text).toContain(`owner's words: "${card.words}"`);
+  expect((await recallLines())[0]!.untold).toHaveLength(5);
+});
+
 // ---- the renderer alone
 
 const T = "2026-03-02";
@@ -284,16 +306,21 @@ function past(id: string, thesis: string, wrong_if?: string): PastDecision {
     figures: [{ k: 5, change_pct: 2, vs_benchmark_pct: null }] };
 }
 
-function answer(applies: AppliedCard[], same: PastDecision[], like: PastDecision[]): Omit<RecallAnswer, "text"> {
-  return { recall_id: "r-20260302-00000000", applies, applies_more: 0, untold: [], untold_more: 0, same, like,
+function answer(applies: AppliedCard[], same: PastDecision[], like: PastDecision[], untold: UntoldCard[] = []): Omit<RecallAnswer, "text"> {
+  return { recall_id: "r-20260302-00000000", applies, applies_more: 0, untold, untold_more: 0, same, like,
     house: { armed: applies.length, may_be_due: 0, proposals_waiting: 0, cards_changed: [], cards_broken: [],
       owner_chain_broken: false, chains_broken: [], partial: [] } };
 }
 
-/** Which yield step a text shows: 0 nothing yielded … 5 cards left out. */
-function step(text: string, shownCards: number): number {
+function untoldCard(id: string, definition: string): UntoldCard {
+  return { id, needs: [{ what: "fact", fact: "change_5d_pct", definition }] };
+}
+
+/** Which yield step a text shows: 0 nothing yielded … 5 untold cards left out, 6 applying cards left out. */
+function step(text: string, shownCards: number, untoldCards = 0): number {
   if (text.includes("d-case-0:")) return 0;                                    // a full record lists every case
-  if ((text.match(/owner's words:/g) ?? []).length < shownCards) return 5;
+  if ((text.match(/owner's words:/g) ?? []).length < shownCards) return 6;
+  if ((text.match(/^- u-card-/gm) ?? []).length < untoldCards) return 5;
   if (!text.includes("d-same-")) return 4;
   if (!text.includes("d-like-")) return 3;
   return text.includes("…") ? 2 : 1;
@@ -317,25 +344,32 @@ test("what yields, in order", () => {
   expect(records).toContain("followed: 60 cases, latest 2026-03-02 NVDA pass d-case-59");
   expect(records).toContain(`record: "A short thesis."`);
 
-  // then theses and conditions are cut with a mark
-  const cut = renderRecall(answer([card("card-a", "caveat", WORDS, 60)], same, like));
-  expect(step(cut, 1)).toBe(2);
+  // then theses, conditions and untold definitions are cut with a mark
+  const cut = renderRecall(answer([card("card-a", "caveat", WORDS, 60)], same, like, [untoldCard("u-card-0", long("义", 500))]));
+  expect(step(cut, 1, 1)).toBe(2);
   expect(cut).toContain(`record: "${long("跌", 60)}…"`);
   expect(cut).not.toContain(long("跌", 61));
+  expect(cut).toContain(`definition: "${long("义", 60)}…"`);
+  expect(cut).not.toContain(long("义", 61));
 
-  // then like decisions go, then the same instrument's, then cards from the end, caveats before red lines
+  // then like decisions go, then the same instrument's, then untold cards from the end, and last applying cards
+  // from the end, caveats before red lines
+  const untold = [0, 1, 2, 3, 4].map((i) => untoldCard(`u-card-${i}`, long("义", 500)));
   const seen: number[] = [];
   let last: { text: string; cards: AppliedCard[] } | undefined;
   for (let n = 1; n <= 9; n++) {
     const cards = Array.from({ length: n }, (_, i) => card(`card-${i}`, i < 2 ? "red-line" : "caveat", long("涨", 200), 60));
-    const text = renderRecall(answer(cards, same, like));
+    const text = renderRecall(answer(cards, same, like, untold));
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(RECALL_MAX_BYTES);
     for (const shown of cards.filter((x) => text.includes(`${x.id},`))) expect(text).toContain(shown.words);
-    seen.push(step(text, n));
+    const s = step(text, n, untold.length);
+    if (s === 6) expect(text).not.toMatch(/^- u-card-/m);                       // no applying card goes while an untold one stays
+    seen.push(s);
     last = { text, cards };
   }
-  expect(seen).toEqual([...seen].sort((x, y) => x - y));
-  expect(new Set(seen)).toEqual(new Set([2, 3, 4, 5]));
+  expect(seen, String(seen)).toEqual([...seen].sort((x, y) => x - y));
+  expect(new Set(seen), String(seen)).toEqual(new Set([3, 4, 5, 6]));                // step 2 is shown above
+  expect(last!.text).toContain("5 more not shown.");                               // the untold cards, counted
   expect(last!.text).toContain("red line card-0,");
   expect(last!.text).toContain("red line card-1,");
   expect(last!.text).not.toContain("card-8,");

@@ -3,8 +3,9 @@
 // Every sentence the renderer writes of its own is a piece of FRAME; what comes from the store (the owner's words, a
 // thesis, a condition, a fact's definition) is quoted with JSON's escapes and labelled. When the text would run
 // over, it yields one step at a time, re-rendering each time: records shrink to their counts and one line a group;
-// theses and conditions are cut short with a mark; like decisions go; the same instrument's go; then cards are shown
-// fewer, caveats before red lines, and last untold cards. An applying card's words are never cut.
+// theses, conditions and untold cards' definitions are cut short with a mark; like decisions go; the same
+// instrument's go; untold cards go from the end; last, applying cards are shown fewer, caveats before red lines. An
+// applying card's words are never cut, and an applying card goes only when nothing else is left to yield.
 import { RECALL_MAX_BYTES } from "./limits.js";
 import type { Case, CardRecord, Figure } from "./records.js";
 import type { AppliedCard, House, PastDecision, RecallAnswer, UntoldCard } from "./recall.js";
@@ -70,7 +71,7 @@ export const FRAME: readonly string[] = Object.freeze(Object.values(F));
 type Answer = Omit<RecallAnswer, "text">;
 interface Shape { fullRecords: boolean; cut: boolean; like: boolean; same: boolean }
 
-/** Theses and conditions, once cut short, keep this many characters before the mark. */
+/** Theses, conditions and definitions, once cut short, keep this many characters before the mark. */
 const CUT_TO = 60;
 /** A house list names at most this many cards; the rest are counted. */
 const HOUSE_LIST = 10;
@@ -89,8 +90,8 @@ export function renderRecall(a: Answer): string {
 }
 
 /**
- * The text, and the answer as the text shows it: a card the last steps leave out moves from `applies` into
- * `applies_more` (an untold one into `untold_more`).
+ * The text, and the answer as the text shows it: an untold card the last steps leave out moves into `untold_more`,
+ * an applying one from `applies` into `applies_more`.
  */
 export function fitRecall(a: Answer): { answer: Answer; text: string } {
   let text = "";
@@ -100,15 +101,15 @@ export function fitRecall(a: Answer): { answer: Answer; text: string } {
   }
   const last = SHAPES.at(-1)!;
   let cur = a;
+  while (cur.untold.length > 0) {
+    cur = { ...cur, untold: cur.untold.slice(0, -1), untold_more: cur.untold_more + 1 };
+    text = render(cur, last);
+    if (fits(text)) return { answer: cur, text };
+  }
   while (cur.applies.length > 0) {
     const i = cur.applies.findLastIndex((c) => c.strength === "caveat");
     const at = i === -1 ? cur.applies.length - 1 : i;
     cur = { ...cur, applies: cur.applies.filter((_, j) => j !== at), applies_more: cur.applies_more + 1 };
-    text = render(cur, last);
-    if (fits(text)) return { answer: cur, text };
-  }
-  while (cur.untold.length > 0) {
-    cur = { ...cur, untold: cur.untold.slice(0, -1), untold_more: cur.untold_more + 1 };
     text = render(cur, last);
     if (fits(text)) return { answer: cur, text };
   }
@@ -129,7 +130,7 @@ function render(a: Answer, s: Shape): string {
 
   out.push(F.untoldHead);
   if (a.untold.length === 0 && a.untold_more === 0) out.push(F.none);
-  for (const card of a.untold) out.push(...untold(card));
+  for (const card of a.untold) out.push(...untold(card, s.cut));
   if (a.untold_more > 0) out.push(`${a.untold_more} ${F.notShown}`);
 
   out.push(F.sameHead, ...decisions(a.same, s.same, s.cut));
@@ -177,10 +178,10 @@ function caseHead(c: Case): string {
   return [c.date, c.symbol, c.action, c.decision].filter((x) => x !== undefined).join(" ");
 }
 
-function untold(card: UntoldCard): string[] {
+function untold(card: UntoldCard, cut: boolean): string[] {
   return [`- ${card.id}`, ...card.needs.map((n) => (n.what === "market"
     ? `  ${F.lacksMarket}`
-    : `  ${F.lacksFact} ${n.fact}, ${F.definition} ${quote(n.definition)}`))];
+    : `  ${F.lacksFact} ${n.fact}, ${F.definition} ${quote(short(n.definition, cut))}`))];
 }
 
 function decisions(list: PastDecision[], shown: boolean, cut: boolean): string[] {
