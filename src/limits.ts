@@ -1,0 +1,14 @@
+// src/limits.ts — every number the spec pins, in one place
+export const LINE_MAX_BYTES = 16_384;
+export const THESIS_MAX = 1000, WRONG_IF_MAX = 500, WORDS_MAX = 500, NOTE_MAX = 500, REASON_MAX = 500, SIZE_MAX = 80;
+export const TAGS_MAX = 12, FACTS_MAX = 20, EVIDENCE_MAX = 10, FACT_SOURCE_MAX = 120, CARD_WORDS_MAX = 200;
+export const HORIZON_MIN = 1, HORIZON_MAX = 250;
+export const HOUR = 3_600_000, DAY = 24 * HOUR;
+export const BACKFILL_MS = DAY, VOID_WINDOW_MS = DAY, OCCASION_MS = DAY, NO_DECISION_MS = 7 * DAY, QUIET_CARD_MS = 90 * DAY;
+export const MEDIAN_FROM = 8, OVERRIDDEN_FLAG = 3, TAG_SHARED_FLAG = 3;
+export const RECALL_MAX_BYTES = 4000, INSTRUCTIONS_MAX_BYTES = 1500;
+export const SHOW_CARDS = 5, SHOW_UNTOLD = 5, SHOW_SAME = 3, SHOW_LIKE = 3, THESIS_SHOWN = 160;
+export const LEG_MAX_SESSIONS = 5, LEG_MAX_ABS_PCT = 50;
+export const LOCK_STALE_MS = 10_000, LOCK_WAIT_MS = 5_000;
+export const DEFAULT_HORIZONS = [1, 5, 20, 60];
+export const AGENT_NAME = /^[a-z0-9-]{2,32}$/, FACT_NAME = /^[a-z0-9_]{1,40}$/, LESSON_ID = /^[a-z0-9][a-z0-9-]{1,39}$/;
