@@ -5,7 +5,7 @@ import { PassThrough, Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { beforeEach, expect, test } from "vitest";
 import { cardStates } from "../src/cards.js";
-import { isEntry, makeAsk, runCli, visible, type Io } from "../src/cli.js";
+import { charWidth, isEntry, makeAsk, rows, runCli, visible, type Io } from "../src/cli.js";
 import { appendLine } from "../src/log.js";
 import type { ProposalLine } from "../src/types.js";
 import { openMemory, type Card, type Memory } from "../src/index.js";
@@ -16,10 +16,10 @@ const WORDS = "No new position in a name that ran 20% in five sessions.";
 const nvda = { action: "buy", whose: "owner", thesis: "Data-centre orders keep rising.", symbol: "NVDA", market: "US" } as const;
 const OWNERS_ACT = "this is the owner's act: run it at a terminal";
 
-interface FakeIo extends Io { asked: string[]; printed(): string; errors(): string }
+interface FakeIo extends Io { asked: string[]; printed(): string; errors(): string; seen(): string }
 
 /** An Io that records what is printed and asked, and answers from a list; each asked entry holds what was printed since the last question, then the question. */
-function fakeIo(opts: { isTTY?: boolean; answers?: Array<string | (() => Promise<string>)>; env?: NodeJS.ProcessEnv } = {}): FakeIo {
+function fakeIo(opts: { isTTY?: boolean; answers?: Array<string | (() => Promise<string>)>; env?: NodeJS.ProcessEnv; columns?: number } = {}): FakeIo {
   const outs: string[] = [];
   const errs: string[] = [];
   const asked: string[] = [];
@@ -29,11 +29,13 @@ function fakeIo(opts: { isTTY?: boolean; answers?: Array<string | (() => Promise
   return {
     isTTY: opts.isTTY ?? false,
     env: opts.env ?? {},
+    columns: opts.columns ?? 400,                                   // a wide terminal, unless the test names one
     asked,
     out(text) { outs.push(text); transcript.push(text); },
     err(text) { errs.push(text); transcript.push(text); },
     async ask(question) {
       asked.push([...transcript.slice(mark), question].join("\n"));
+      transcript.push(question);
       mark = transcript.length;
       const answer = answers.shift();
       if (answer === undefined) throw new Error(`the test gave no answer to: ${question}`);
@@ -41,6 +43,7 @@ function fakeIo(opts: { isTTY?: boolean; answers?: Array<string | (() => Promise
     },
     printed: () => outs.join("\n"),
     errors: () => errs.join("\n"),
+    seen: () => transcript.join("\n"),
   };
 }
 
@@ -135,7 +138,7 @@ test("arm asks for the typed word", async () => {
   const io = fakeIo({ isTTY: true, answers: ["yes"] });
   expect(await runCli(["arm", ID, "--home", home], io)).toBe(0);
   expect(io.asked[0]).toContain(WORDS);                       // the card is shown before the question
-  expect(io.asked[0]).toContain("Type yes to arm:");
+  expect(io.asked[0]).toContain(`Type yes to arm ${ID} (caveat, dont buy/add, sha `);
   expect((await cardStates(home)).cards[0]!.state).toBe("armed");
 });
 
@@ -213,7 +216,7 @@ test("retire shows the card and the reason, then retires it", async () => {
   expect(await runCli(["retire", ID, "--reason", "It no longer fits.", "--home", home], io)).toBe(0);
   expect(io.asked[0]).toContain(WORDS);
   expect(io.asked[0]).toContain("It no longer fits.");
-  expect(io.asked[0]).toContain("Type yes to retire:");
+  expect(io.asked[0]).toContain(`Type yes to retire ${ID}: `);
   expect((await cardStates(home)).cards[0]!.state).toBe("retired");
 });
 
@@ -225,13 +228,13 @@ test("void at the command line is the owner's", async () => {
   expect(io.asked[0]).toContain(d.id);
   expect(io.asked[0]).toContain("Data-centre orders keep rising.");
   expect(io.asked[0]).toContain("Registered by mistake.");
-  expect(io.asked[0]).toContain("Type yes to void:");
+  expect(io.asked[0]).toContain(`Type yes to void ${d.id}: `);
   const shown = await memory.show(d.id);
   expect(shown).toMatchObject({ decision: { void: true, amends: [{ what: "void", by: "owner", reason: "Registered by mistake." }] } });
 });
 
 test("review: accept, edit, reject, skip", async () => {
-  const ps = [];
+  const ps: ProposalLine[] = [];
   for (const lesson of ["lesson-a", "lesson-b", "lesson-c", "lesson-d"]) {
     ps.push(await memory.propose("agent-one", { what: "new", lesson, card: card(lesson), reason: `Seen twice: ${lesson}.` }));
   }
@@ -242,9 +245,10 @@ test("review: accept, edit, reject, skip", async () => {
   expect(io.asked[0]).toContain("lesson-a");
   expect(io.asked[0]).toContain(WORDS);
   expect(io.asked[0]).toContain("Seen twice: lesson-a.");
-  expect(io.asked[1]).toContain("Type yes to accept:");
+  expect(io.asked[1]).toContain(`Type yes to arm lesson-a (caveat, dont buy/add, sha `);
+  expect(io.asked[1]).toContain(`) from proposal ${ps[0]!.id}: `);
   expect(io.printed()).toContain(join(home, "lessons", "lesson-b.md"));
-  expect(io.asked.some((q) => q.includes("Type yes to reject:"))).toBe(true);
+  expect(io.asked.some((q) => q.includes(`Type yes to reject proposal ${ps[2]!.id}: `))).toBe(true);
   expect(io.errors()).toBe("");
 
   const states = Object.fromEntries((await cardStates(home)).cards.map((s) => [s.id, s.state]));
@@ -262,7 +266,7 @@ test("review: a refusal on one item is one line, and the walk goes on", async ()
   const fresh = await memory.propose("agent-one", { what: "new", lesson: "lesson-e", card: card("lesson-e"), reason: "Seen." });
   const io = fakeIo({ isTTY: true, answers: ["edit", "accept", "yes"] });
   expect(await runCli(["review", "--home", home], io, deps)).toBe(1);
-  expect(io.errors().split("\n")).toEqual([`gravit-memory: proposal ${retire.id} retires a lesson: it has no card to edit; accept or reject it.`]);
+  expect(io.errors().split("\n")).toEqual(["gravit-memory:", `  | proposal ${retire.id} retires a lesson: it has no card to edit; accept or reject it.`]);
   expect((await memory.review()).proposals.map((p) => p.id)).toEqual([retire.id]);
   expect((await cardStates(home)).cards.find((s) => s.id === fresh.lesson)!.state).toBe("armed");
 });
@@ -281,9 +285,9 @@ test("review: a changed card — arm or discard", async () => {
   expect(io.asked[0]).toContain(`- ${WORDS}`);                       // the difference is printed
   expect(io.asked[0]).toContain("+ No new position in a name that ran 25% in five sessions.");
   expect(io.asked[0]).toContain("arm, discard or skip");
-  expect(io.asked[1]).toContain("Type yes to arm:");
+  expect(io.asked[1]).toContain(`Type yes to arm ${ID} (caveat, dont buy/add, sha `);
   expect(io.asked[2]).toContain("+ No new position in a name that ran 30% in five sessions.");
-  expect(io.asked[3]).toContain("Type yes to discard:");
+  expect(io.asked[3]).toContain("Type yes to discard the edit of second-look: ");
 
   const states = (await cardStates(home)).cards;
   expect(states.map((s) => [s.id, s.state])).toEqual([[ID, "armed"], ["second-look", "armed"]]);
@@ -298,7 +302,7 @@ test("reseal shows where it broke", async () => {
   const io = fakeIo({ isTTY: true, answers: ["yes"] });
   expect(await runCli(["reseal", "--home", home], io, deps)).toBe(0);
   expect(io.asked[0]).toMatch(/decisions\.jsonl.*line 1/);
-  expect(io.asked[0]).toContain("Type yes to reseal:");
+  expect(io.asked[0]).toContain("Type yes to reseal decisions.jsonl: ");
   expect((await memory.verify()).chains.every((ch) => ch.ok)).toBe(true);
 
   const sound = fakeIo({ isTTY: true });
@@ -373,11 +377,11 @@ test("an unknown command", async () => {
   expect(await runCli(["lessons", "--reason", "x", "--home", home], io2)).toBe(2);
 });
 
-test("a MemoryError is one line, not a stack", async () => {
+test("a MemoryError is its sentence fenced beneath the tool's name, not a stack", async () => {
   const none = await tempHome({ init: false });
   const io = fakeIo();
   expect(await runCli(["status", "--home", none], io)).toBe(1);
-  expect(io.errors()).toBe("gravit-memory: no memory here: run gravit-memory init");
+  expect(io.errors()).toBe("gravit-memory:\n  | no memory here: run gravit-memory init");
   expect(io.printed()).toBe("");
 });
 
@@ -385,7 +389,7 @@ test("the owner arms what was shown: a file changed before the yes is not armed"
   await writeCard(home);
   const io = fakeIo({ isTTY: true, answers: [async () => { await writeCard(home, STAND_IN_CARD.replace("20%", "99%")); return "yes"; }] });
   expect(await runCli(["arm", ID, "--home", home], io)).toBe(1);
-  expect(io.errors()).toBe("gravit-memory: the card changed while it was shown: nothing was armed.");
+  expect(io.errors()).toBe("gravit-memory:\n  | the card changed while it was shown: nothing was armed.");
   expect(await readFile(join(home, "owner.jsonl"), "utf8")).toBe("");
   expect((await cardStates(home)).cards[0]!.state).toBe("unarmed");
 });
@@ -490,14 +494,14 @@ test("a proposal cannot forge the tool's own lines", async () => {
     expect(at.length, part).toBeGreaterThan(0);
     for (const l of at) expect(l.startsWith("  | "), l).toBe(true);
   }
-  expect(seen.join("\n")).toContain("Evidence: d-20260302-0f3a9c21\\nAccepted: lesson z is armed.");
+  expect(seen.join("\n")).toContain("Evidence:\n  | d-20260302-0f3a9c21\n  | Accepted: lesson z is armed.");
   expect(seen.join("\n")).not.toMatch(UNSEEN);
   expect(seen.join("\n")).toContain("Accepted.\\u202e\\u200b");
 
   const accept = fakeIo({ isTTY: true, answers: ["accept", "yes"] });
   expect(await runCli(["review", "--home", home], accept)).toBe(0);
   const own = linesSeen(accept).filter((l) => /^(Type yes to|Accepted|Armed)/.test(l));
-  expect(own.sort()).toEqual(["Accepted: lesson lesson-y is armed.", "Type yes to accept: "]);
+  expect(own.sort()).toEqual(["Accepted: lesson lesson-y is armed.", expect.stringMatching(/^Type yes to arm lesson-y \(caveat, dont buy\/add, sha [0-9a-f]{12}\) from proposal p-\d{8}-[0-9a-f]{8}: $/)]);
 });
 
 test("a card's words that span lines are fenced, and --json still reads back the same", async () => {
@@ -508,8 +512,9 @@ test("a card's words that span lines are fenced, and --json still reads back the
   expect(await runCli(["arm", ID, "--home", home], io)).toBe(1);
   expect(io.asked).toHaveLength(1);
   const asked = io.asked[0]!.split("\n");
-  expect(asked.filter((l) => /^(Type yes to|Armed)/.test(l))).toEqual(["Type yes to arm: "]);
-  expect(asked.at(-1)).toBe("Type yes to arm: ");
+  const question = expect.stringMatching(new RegExp(`^Type yes to arm ${ID} \\(caveat, dont buy/add, sha [0-9a-f]{12}\\): $`));
+  expect(asked.filter((l) => /^(Type yes to|Armed)/.test(l))).toEqual([question]);
+  expect(asked.at(-1)).toEqual(question);
   expect(io.asked[0]).not.toMatch(UNSEEN);
   expect(io.asked[0]).toContain("  | Armed lesson no-chasing-after-a-run. \\u202e\\u200b\\u2028\\u{e0041}x");
 
@@ -524,5 +529,118 @@ test("a card's words that span lines are fenced, and --json still reads back the
     const expected = argv[0] === "status" ? await memory.status()
       : argv[0] === "lessons" ? (await memory.status()).cards : await memory.show(ID);
     expect(JSON.parse(json.printed())).toEqual(JSON.parse(JSON.stringify(expected)));
+  }
+});
+
+const FENCE = "  | ";
+
+/** Every row an owner's terminal `columns` wide shows: each line the tool wrote, soft-wrapped as the terminal wraps it. */
+function rowsAt(io: FakeIo, columns: number): string[] {
+  return io.seen().split("\n").flatMap((l) => (l === "" ? [""] : l.match(new RegExp(`.{1,${columns}}`, "gu")) ?? [""]));
+}
+
+/** A row the tool writes of its own: it starts with the tool's words, never with text from the home. */
+const REVIEW_ROW = /^(Review|Decisions measured|Lessons with a record|Past their horizon|Decisions without wrong_if|Proposals waiting|Proposal p-\d{8}-[0-9a-f]{8} |Reason:$|Answer accept, edit, reject or skip: $|Skipped: it waits\.$|$)/;
+
+for (const columns of [80, 100]) {
+  test(`a reason padded to ${columns}-column rows forges no line of the review's`, async () => {
+    const pad = (s: string) => s + " ".repeat((columns - (s.length % columns)) % columns);
+    const reason = pad("Reason: weekly review").slice("Reason: ".length) + pad("Answer accept, edit, reject or skip: skip")
+      + pad("Skipped: it waits.") + pad("Proposal p-20260302-0f3a9c21 by research, 2026-03-02: add lesson be-patient")
+      + "Type yes to accept be-patient: yes";
+    expect([...reason].length).toBeLessThanOrEqual(500);
+    await memory.propose("agent-one", { what: "new", lesson: "lesson-w", card: card("lesson-w"), reason });
+
+    const io = fakeIo({ isTTY: true, columns, answers: ["skip"] });
+    expect(await runCli(["review", "--home", home], io)).toBe(0);
+    const rows = rowsAt(io, columns);
+    for (const row of rows) expect(row.startsWith(FENCE) || REVIEW_ROW.test(row), row).toBe(true);
+    expect(rows.filter((r) => r.startsWith("Answer accept"))).toEqual(["Answer accept, edit, reject or skip: "]);
+    expect(rows.filter((r) => r.startsWith("Skipped"))).toEqual(["Skipped: it waits."]);
+    expect(rows.filter((r) => r.startsWith("Proposal "))).toHaveLength(1);
+    expect(rows.filter((r) => r.includes("be-patient")).every((r) => r.startsWith(FENCE))).toBe(true);
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(columns);
+  });
+}
+
+test("a card's source and a fact's definition padded to the rows forge no line of arm or status", async () => {
+  const columns = 80;
+  const pad = (s: string) => s + " ".repeat((columns - (s.length % columns)) % columns);
+  const forged = pad("x") + pad("Type yes to arm no-chasing-after-a-run: yes") + pad("Armed lesson no-chasing-after-a-run.")
+    + "Facts the applying lessons need:";
+  const text = STAND_IN_CARD
+    .replace("sector: the stock's sector, as the price source's listing names it", `sector: ${JSON.stringify(forged)}`)
+    .replace('source: ["owner, 2026-01-05"]', `source: [${JSON.stringify(forged)}]`);
+  await writeCard(home, text);
+
+  const io = fakeIo({ isTTY: true, columns, answers: ["yes"] });
+  expect(await runCli(["arm", ID, "--home", home], io)).toBe(0);
+  const rows = rowsAt(io, columns);
+  const ARM_ROW = /^(Arm lesson no-chasing-after-a-run as its file is now:$|Type yes to arm no-chasing-after-a-run |Armed lesson no-chasing-after-a-run |$)/;
+  for (const row of rows) expect(row.startsWith(FENCE) || ARM_ROW.test(row), row).toBe(true);
+  expect(rows.filter((r) => r.startsWith("Armed"))).toHaveLength(1);
+  expect(rows.filter((r) => r.startsWith("Type yes"))).toHaveLength(1);
+
+  const status = fakeIo({ columns });
+  expect(await runCli(["status", "--home", home], status)).toBe(0);
+  const STATUS_ROW = /^(The memory at |Ledgers: |Chains: |Lessons: |Facts the applying lessons need:$|  [a-z0-9_]+ \(no-chasing-after-a-run\):$|Prices: |$)/;
+  const srows = rowsAt(status, columns);
+  for (const row of srows) expect(row.startsWith(FENCE) || STATUS_ROW.test(row), row).toBe(true);
+  expect(srows.filter((r) => r.startsWith("Facts the applying"))).toHaveLength(1);
+});
+
+test("each typed word names its object, and arm's names the hash that is then armed", async () => {
+  await writeCard(home);
+  const io = fakeIo({ isTTY: true, columns: 80, answers: ["yes"] });
+  expect(await runCli(["arm", ID, "--home", home], io)).toBe(0);
+  const s = (await cardStates(home)).cards[0]!;
+  expect(s.state).toBe("armed");
+  const question = io.asked[0]!.split("\n").filter((l) => !l.startsWith(FENCE)).at(-1)!;
+  expect(question).toBe(`Type yes to arm ${ID} (caveat, dont buy/add, sha ${s.sha256!.slice(0, 12)}): `.slice(0, 80));
+  expect(io.asked[0]!.replaceAll(`\n${FENCE}`, "")).toContain(`Type yes to arm ${ID} (caveat, dont buy/add, sha ${s.sha256!.slice(0, 12)}): `);
+
+  const retire = fakeIo({ isTTY: true, answers: ["yes"] });
+  expect(await runCli(["retire", ID, "--reason", "Done with it.", "--home", home], retire)).toBe(0);
+  expect(retire.asked[0]).toContain(`Type yes to retire ${ID}: `);
+
+  const d = await memory.record("agent-one", nvda);
+  const v = fakeIo({ isTTY: true, answers: ["yes"] });
+  expect(await runCli(["void", d.id, "--reason", "Mistaken.", "--home", home], v, deps)).toBe(0);
+  expect(v.asked[0]).toContain(`Type yes to void ${d.id}: `);
+
+  const p = await memory.propose("agent-one", { what: "new", lesson: "lesson-q", card: card("lesson-q"), reason: "Seen." });
+  const r = fakeIo({ isTTY: true, answers: ["accept", "yes"] });
+  expect(await runCli(["review", "--home", home], r, deps)).toBe(0);
+  const armed = (await cardStates(home)).cards.find((x) => x.id === "lesson-q")!;
+  expect(r.asked[1]).toContain(`Type yes to arm lesson-q (caveat, dont buy/add, sha ${armed.sha256!.slice(0, 12)}) from proposal ${p.id}: `);
+
+  await tamper("decisions.jsonl", "Data-centre", "Data-center");
+  const rs = fakeIo({ isTTY: true, answers: ["yes"] });
+  expect(await runCli(["reseal", "--home", home], rs, deps)).toBe(0);
+  expect(rs.asked[0]).toContain("Type yes to reseal decisions.jsonl: ");
+});
+
+test("rows count East Asian wide characters as two columns and fence every further row", () => {
+  const width = (row: string) => [...row].reduce((n, ch) => n + charWidth(ch.codePointAt(0)!), 0);
+  const line = `Reason ${"不追高".repeat(30)}`;
+  const cut = rows(line, 40).split("\n");
+  expect(cut.length).toBeGreaterThan(1);
+  for (const row of cut) expect(width(row)).toBeLessThanOrEqual(40);
+  expect(cut.slice(1).every((row) => row.startsWith(FENCE))).toBe(true);
+  expect(cut.join("").replaceAll(FENCE, "")).toBe(line);
+  expect(charWidth("a".codePointAt(0)!)).toBe(1);
+  expect(charWidth("高".codePointAt(0)!)).toBe(2);
+  expect(charWidth("Ａ".codePointAt(0)!)).toBe(2);
+});
+
+test("the width is the Io's, 80 when it gives none, and never under 40", async () => {
+  const reason = "x".repeat(300);
+  await memory.propose("agent-one", { what: "new", lesson: "lesson-v", card: card("lesson-v"), reason });
+  for (const [given, width] of [[undefined, 80], [20, 40], [120, 120]] as const) {
+    const io = fakeIo({ isTTY: true, answers: ["skip"] });
+    io.columns = given;
+    expect(await runCli(["review", "--home", home], io)).toBe(0);
+    const lines = io.seen().split("\n");
+    expect(Math.max(...lines.map((l) => l.length))).toBe(width);
   }
 });

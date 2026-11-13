@@ -7,10 +7,13 @@
 // `Type yes to <act>:`; anything but exactly `yes` changes nothing. They reach the core only through Memory.owner.
 // Exit codes: 0 done; 1 nothing changed, a refusal, or verify not sound; 2 misuse.
 //
-// Text from the home (ledger lines, card files) is data, never the tool's own words: a field that is one line has its
-// newlines shown as \n (`one`), a value that may span lines is printed behind a fence, "  | " on each line (`fence`),
-// so no line of it starts at column zero and none can pose as a question or a result. Every word that reaches the
-// terminal then passes `visible`, so no control, format or separator character hides or reorders what is shown.
+// Text from the home (ledger lines, card files) is data, never the tool's own words. It is never printed on a line of
+// the tool's: a label, then the value beneath behind a fence, "  | " on each of its lines (`fence`). Only validated
+// identifiers stay inline (`ident`: ids, lesson ids, agents' names, enum words, ISO times; anything else shows as "?").
+// Every word that reaches the terminal then passes `visible`, so no control, format or separator character hides or
+// reorders what is shown, and `rows`, which cuts every line to the terminal's width (East Asian wide characters
+// count 2) and puts each further row behind the fence: so no part of a stored value reaches column zero, and none can
+// pose as a question or a result, however the terminal would have wrapped it.
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -19,17 +22,23 @@ import type { Readable } from "node:stream";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { armedPath, lessonPath, renderCard } from "./cards.js";
+import { armedPath, lessonPath, parseCard, renderCard } from "./cards.js";
 import { MemoryError } from "./errors.js";
 import { initHome, resolveHome } from "./home.js";
 import { sha256Hex } from "./ids.js";
 import { openMemory, type CardRecord, type CardState, type DecisionView, type Figure, type Memory, type PastDecision,
   type Review, type Status } from "./index.js";
-import { LESSON_ID, REASON_MAX } from "./limits.js";
+import { AGENT_NAME, FACT_NAME, LESSON_ID, REASON_MAX } from "./limits.js";
 import { runMcp } from "./mcp.js";
-import type { Deps, ProposalLine } from "./types.js";
+import { ACTIONS } from "./schema.js";
+import type { Card, Deps, ProposalLine } from "./types.js";
 
-export interface Io { out(text: string): void; err(text: string): void; isTTY: boolean; ask(question: string): Promise<string>; env: NodeJS.ProcessEnv }
+/** The terminal: `columns` its width (the real one gives process.stdout.columns; 80 when not given, never under 40). */
+export interface Io { out(text: string): void; err(text: string): void; isTTY: boolean; ask(question: string): Promise<string>;
+  env: NodeJS.ProcessEnv; columns?: number }
+
+/** The Io the commands write through: every line made visible and cut to the width; `json` is a document, uncut. */
+interface Door extends Io { columns: number; json(text: string): void }
 
 interface Command { usage: string; what: string; id?: string; json?: true; reason?: true; owner?: true }
 
@@ -51,6 +60,15 @@ const COMMANDS: Record<string, Command> = {
 /** The name reconcile writes its outcome lines under when the command line runs it. */
 const RECONCILER = "command-line";
 const DECISION_ID = /^d-\d{8}-[0-9a-f]{8}$/;
+const PROPOSAL_ID = /^p-\d{8}-[0-9a-f]{8}$/;
+const LINE_ID = /^[a-z]-\d{8}-[0-9a-f]{8}$/;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}))?$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const WRITER = new RegExp(`^owner$|${AGENT_NAME.source}`);
+const ACTION = new RegExp(`^(${ACTIONS.join("|")})$`);
+const WHOSE = /^(owner|agent)$/;
+const DEFAULT_COLUMNS = 80;
+const MIN_COLUMNS = 40;
 const OWNERS_ACT = "this is the owner's act: run it at a terminal";
 const NOTHING = "nothing changed";
 
@@ -78,27 +96,83 @@ function jsonText(value: unknown): string {
     [...Array(ch.length).keys()].map((i) => `\\u${ch.charCodeAt(i).toString(16).padStart(4, "0")}`).join(""));
 }
 
-/** A one-line field from the home: a newline in it is shown as \n, so it cannot start a line of its own. */
-function one(text: string): string {
-  return text.replaceAll("\n", "\\n");
-}
-
 const FENCE = "  | ";
 
-/** Text from the home that may span lines, every line behind the fence. */
+/** Text from the home, every line behind the fence; `rows` then cuts each to the width, the fence on every row. */
 function fence(text: string): string {
   return text.split("\n").map((line) => `${FENCE}${line}`).join("\n");
 }
 
-/** A labelled value from the home: on the label's line when it is one line, else fenced beneath it. */
+/** A labelled value from the home: the label on its own line, the value fenced beneath it. */
 function field(label: string, value: string): string[] {
-  return value.includes("\n") ? [`${label}:`, fence(value)] : [`${label}: ${value}`];
+  return [`${label}:`, fence(value)];
+}
+
+/** A value from the home that may stand on a line of the tool's: itself when it is a string the pattern takes, else "?". */
+function ident(value: unknown, pattern: RegExp): string {
+  return typeof value === "string" && value.length <= 64 && pattern.test(value) ? value : "?";
+}
+
+/** The terminal's width: the Io's when it gives a sound one, else 80; never under 40. */
+function columnsOf(columns: number | undefined): number {
+  return Math.max(MIN_COLUMNS, columns !== undefined && Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : DEFAULT_COLUMNS);
+}
+
+/** Columns a code point takes: 2 for East Asian wide and fullwidth characters (and every one above the BMP), else 1. */
+export function charWidth(cp: number): number {
+  if (cp > 0xffff) return 2;
+  return (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x231a && cp <= 0x231b) || (cp >= 0x2329 && cp <= 0x232a)
+    || (cp >= 0x23e9 && cp <= 0x23f3) || (cp >= 0x25fd && cp <= 0x25fe) || (cp >= 0x2614 && cp <= 0x2615)
+    || (cp >= 0x2648 && cp <= 0x2653) || (cp >= 0x267f && cp <= 0x26ff) || (cp >= 0x2705 && cp <= 0x27bf)
+    || (cp >= 0x2b1b && cp <= 0x2b55) || (cp >= 0x2e80 && cp <= 0x303e) || (cp >= 0x3041 && cp <= 0xa4cf)
+    || (cp >= 0xa960 && cp <= 0xa97f) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff)
+    || (cp >= 0xfe10 && cp <= 0xfe19) || (cp >= 0xfe30 && cp <= 0xfe6f) || (cp >= 0xff00 && cp <= 0xff60)
+    || (cp >= 0xffe0 && cp <= 0xffe6) ? 2 : 1;
+}
+
+/**
+ * The text as the rows of a terminal `columns` wide: a line wider than that is cut, and each further row of it
+ * carries the fence, so nothing of a line but its own start reaches column zero.
+ */
+export function rows(text: string, columns: number): string {
+  return text.split("\n").map((line) => {
+    const out: string[] = [];
+    let row = "";
+    let width = 0;
+    for (const ch of line) {
+      const w = charWidth(ch.codePointAt(0)!);
+      if (width + w > columns) {
+        out.push(row);
+        row = FENCE;
+        width = FENCE.length;
+      }
+      row += ch;
+      width += w;
+    }
+    out.push(row);
+    return out.join("\n");
+  }).join("\n");
+}
+
+/** A card as the typed word names it, from validated pieces alone: "caveat, dont buy/add". */
+function cardWords(card: Card | undefined): string {
+  if (card === undefined) return "?";
+  const actions = Array.isArray(card.actions) ? card.actions.map((a) => ident(a, ACTION)).join("/") : "?";
+  return `${ident(card.strength, /^(caveat|red-line)$/)}, ${ident(card.says, /^(dont|do|careful)$/)} ${actions}`;
+}
+
+/** A refusal or a failure on err: the head, then its sentence fenced beneath (it may quote the home's text). */
+function fault(io: Door, head: string, message: string): void {
+  io.err(`${head}:`);
+  io.err(fence(message));
 }
 
 /** Runs one command line; the answer is the exit code: 0 done, 1 nothing changed or a refusal, 2 misuse. */
 export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<number> {
-  const io: Io = { isTTY: raw.isTTY, env: raw.env, out: (t) => raw.out(visible(t)), err: (t) => raw.err(visible(t)),
-    ask: (q) => raw.ask(visible(q)) };
+  const columns = columnsOf(raw.columns);
+  const shown = (t: string): string => rows(visible(t), columns);
+  const io: Door = { isTTY: raw.isTTY, env: raw.env, columns, out: (t) => raw.out(shown(t)), err: (t) => raw.err(shown(t)),
+    ask: (q) => raw.ask(shown(q)), json: (t) => raw.out(visible(t)) };
   const [name, ...rest] = argv;
   const cmd = name !== undefined && Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
   if (name === undefined || cmd === undefined) {
@@ -158,23 +232,23 @@ export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<numb
     }
     return misuse("is not a command.");
   } catch (err) {
-    if (err instanceof MemoryError) { io.err(`gravit-memory: ${one(err.message)}`); return 1; }
-    io.err(`gravit-memory failed: ${one(err instanceof Error ? err.message : String(err))}`);
+    if (err instanceof MemoryError) { fault(io, "gravit-memory", err.message); return 1; }
+    fault(io, "gravit-memory failed", err instanceof Error ? err.message : String(err));
     return 1;
   }
 }
 
 // ---- the owner's acts ----
 
-/** Asks for the typed word: only exactly `yes`, the line end aside, proceeds. */
-async function confirm(io: Io, act: string): Promise<boolean> {
+/** Asks for the typed word, naming the act and its object: only exactly `yes`, the line end aside, proceeds. */
+async function confirm(io: Door, act: string): Promise<boolean> {
   const answer = await io.ask(`Type yes to ${act}: `);
   if (answer.replace(/[\r\n]+$/, "") === "yes") return true;
   io.out(NOTHING);
   return false;
 }
 
-async function arm(io: Io, memory: Memory, lesson: string): Promise<number> {
+async function arm(io: Door, memory: Memory, lesson: string): Promise<number> {
   const state = await cardOf(memory, lesson);
   if (state.state === "refused") throw new MemoryError("E_CARD", `lesson ${lesson} cannot be armed: ${state.fault ?? "its file is refused."}`);
   if (state.state === "armed") {
@@ -185,41 +259,43 @@ async function arm(io: Io, memory: Memory, lesson: string): Promise<number> {
   const bytes = await readBytes(lessonPath(memory.home, lesson));       // read once: shown, then armed only if unchanged
   if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
   const text = bytes.toString("utf8");
+  const shownSha = sha256Hex(bytes);
+  const card = parseCard(bytes, lesson);
   io.out(`Arm lesson ${lesson} as its file is now:`);
   io.out("");
   io.out(fence(text.trimEnd()));
   io.out("");
   if (state.state === "changed" || state.state === "broken") {
-    io.out(`This replaces the card armed on ${one(state.armedAt ?? "an earlier day")}. The difference from the armed copy:`);
+    io.out(`This replaces the card armed on ${armedOn(state)}. The difference from the armed copy:`);
     io.out(await difference(memory.home, state, text));
   } else if (state.state === "retired") {
     io.out("This arms again a lesson that was retired.");
   }
-  if (!(await confirm(io, "arm"))) return 1;
-  const { sha256 } = await memory.owner.arm(lesson, sha256Hex(bytes));
+  if (!(await confirm(io, `arm ${lesson} (${cardWords(card)}, sha ${shownSha.slice(0, 12)})`))) return 1;
+  const { sha256 } = await memory.owner.arm(lesson, shownSha);
   io.out(`Armed lesson ${lesson} (${sha256.slice(0, 12)}).`);
   return 0;
 }
 
-async function retire(io: Io, memory: Memory, lesson: string, reason: string): Promise<number> {
+async function retire(io: Door, memory: Memory, lesson: string, reason: string): Promise<number> {
   checkReason(reason);
   const state = await cardOf(memory, lesson);
   if (!(state.state === "armed" || state.state === "changed" || state.state === "broken")) {
     throw new MemoryError("E_REFUSED", `lesson ${lesson} is not armed: only an armed card is retired.`);
   }
-  io.out(`Retire lesson ${lesson}, armed on ${one(state.armedAt ?? "an earlier day")}:`);
+  io.out(`Retire lesson ${lesson}, armed on ${armedOn(state)}:`);
   io.out("");
   const armed = state.sha256 ? await readText(armedPath(memory.home, lesson, state.sha256)) : null;
   io.out(armed === null ? "(its armed copy is missing)" : fence(armed.trimEnd()));
   io.out("");
   io.out(field("Reason", reason).join("\n"));
-  if (!(await confirm(io, "retire"))) return 1;
+  if (!(await confirm(io, `retire ${lesson}`))) return 1;
   await memory.owner.retire(lesson, reason);
   io.out(`Retired lesson ${lesson}: it applies no more until it is armed again.`);
   return 0;
 }
 
-async function voidDecision(io: Io, memory: Memory, decision: string, reason: string): Promise<number> {
+async function voidDecision(io: Door, memory: Memory, decision: string, reason: string): Promise<number> {
   checkReason(reason);
   if (!DECISION_ID.test(decision)) throw new MemoryError("E_INPUT", "decision must be a decision id, such as d-20260302-0f3a9c21.");
   const shown = await memory.show(decision);
@@ -230,13 +306,13 @@ async function voidDecision(io: Io, memory: Memory, decision: string, reason: st
   io.out(decisionLines(shown.decision).join("\n"));
   io.out("");
   io.out(field("Reason", reason).join("\n"));
-  if (!(await confirm(io, "void"))) return 1;
+  if (!(await confirm(io, `void ${decision}`))) return 1;
   await memory.owner.void(decision, reason);
   io.out(`Voided decision ${decision}.`);
   return 0;
 }
 
-async function reseal(io: Io, memory: Memory): Promise<number> {
+async function reseal(io: Door, memory: Memory): Promise<number> {
   const broken = (await memory.status()).chains.filter((ch) => !ch.ok);
   if (broken.length === 0) {
     io.out("Every chain holds: there is nothing to reseal.");
@@ -246,13 +322,13 @@ async function reseal(io: Io, memory: Memory): Promise<number> {
   for (const ch of broken) io.out(`  ${ch.file}: broke at line ${ch.line ?? "?"}`);
   io.out("Resealing writes a reseal line at the end of each, naming where it broke and the hash of what is before it;");
   io.out("its chain is verified from there on. No line is changed or removed.");
-  if (!(await confirm(io, "reseal"))) return 1;
+  if (!(await confirm(io, `reseal ${broken.map((ch) => ch.file).join(", ")}`))) return 1;
   for (const r of await memory.owner.reseal()) io.out(`Resealed ${r.file}, broken at line ${r.broke_at}.`);
   return 0;
 }
 
 /** The review's material, then each waiting proposal and each changed card, one answer each. */
-async function review(io: Io, memory: Memory): Promise<number> {
+async function review(io: Door, memory: Memory): Promise<number> {
   const material = await memory.review();
   io.out(reviewLines(material).join("\n"));
   let refused = false;
@@ -261,7 +337,7 @@ async function review(io: Io, memory: Memory): Promise<number> {
       await fn();
     } catch (err) {
       if (!(err instanceof MemoryError)) throw err;
-      io.err(`gravit-memory: ${one(err.message)}`);
+      fault(io, "gravit-memory", err.message);
       refused = true;
     }
   };
@@ -270,22 +346,26 @@ async function review(io: Io, memory: Memory): Promise<number> {
     await each(async () => {
       io.out("");
       io.out(proposalLines(p).join("\n"));
+      const pid = ident(p.id, PROPOSAL_ID);
+      const lesson = ident(p.lesson, LESSON_ID);
       const choice = (await io.ask("Answer accept, edit, reject or skip: ")).trim();
       if (choice === "accept") {
-        if (!(await confirm(io, "accept"))) return;
-        const { lesson } = await memory.owner.accept(p.id);
-        io.out(p.what === "retire" ? `Accepted: lesson ${one(lesson)} is retired.` : `Accepted: lesson ${one(lesson)} is armed.`);
+        const act = p.what === "retire" ? `retire ${lesson}`
+          : `arm ${lesson} (${cardWords(p.card)}, sha ${p.card ? sha256Hex(renderCard(p.card)).slice(0, 12) : "?"})`;
+        if (!(await confirm(io, `${act} from proposal ${pid}`))) return;
+        await memory.owner.accept(p.id);
+        io.out(p.what === "retire" ? `Accepted: lesson ${lesson} is retired.` : `Accepted: lesson ${lesson} is armed.`);
       } else if (choice === "edit") {
-        const { lesson, path } = await memory.owner.edit(p.id);
-        io.out(`Lesson ${one(lesson)} is written, unarmed, at ${one(path)}: edit it, then run gravit-memory arm ${one(lesson)}.`);
+        const { path } = await memory.owner.edit(p.id);
+        io.out(`Lesson ${lesson} is written, unarmed, at ${lesson === "?" ? "?" : path}: edit it, then run gravit-memory arm ${lesson}.`);
       } else if (choice === "reject") {
         const why = (await io.ask("Why reject it? ")).trim();
         if (why === "") { io.out(`A rejection needs a word why: ${NOTHING}.`); return; }
-        if (!(await confirm(io, "reject"))) return;
+        if (!(await confirm(io, `reject proposal ${pid}`))) return;
         await memory.owner.reject(p.id, why);
-        io.out(`Rejected proposal ${one(p.id)}.`);
+        io.out(`Rejected proposal ${pid}.`);
       } else {
-        io.out(choice === "skip" ? "Skipped: it waits." : `${one(choice) || "No answer"} is not accept, edit, reject or skip: it waits.`);
+        io.out(choice === "skip" ? "Skipped: it waits." : "That is not accept, edit, reject or skip: it waits.");
       }
     });
   }
@@ -294,21 +374,23 @@ async function review(io: Io, memory: Memory): Promise<number> {
   for (const s of changed) {
     await each(async () => {
       io.out("");
+      const id = ident(s.id, LESSON_ID);
       const bytes = await readBytes(lessonPath(memory.home, s.id));    // read once: shown, then armed only if unchanged
-      io.out(`Lesson ${one(s.id)} has changed since it was armed on ${one(s.armedAt ?? "an earlier day")}:`);
+      io.out(`Lesson ${id} has changed since it was armed on ${armedOn(s)}:`);
       io.out(await difference(memory.home, s, bytes === null ? null : bytes.toString("utf8")));
       const choice = (await io.ask("Answer arm, discard or skip: ")).trim();
       if (choice === "arm") {
-        if (!(await confirm(io, "arm"))) return;
-        if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${one(s.id)} has no file: write lessons/${one(s.id)}.md first.`);
-        const { sha256 } = await memory.owner.arm(s.id, sha256Hex(bytes));
-        io.out(`Armed lesson ${one(s.id)} as its file is now (${sha256.slice(0, 12)}).`);
+        if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${id} has no file: write lessons/${id}.md first.`);
+        const shownSha = sha256Hex(bytes);
+        if (!(await confirm(io, `arm ${id} (${cardWords(parseCard(bytes, s.id))}, sha ${shownSha.slice(0, 12)})`))) return;
+        const { sha256 } = await memory.owner.arm(s.id, shownSha);
+        io.out(`Armed lesson ${id} as its file is now (${sha256.slice(0, 12)}).`);
       } else if (choice === "discard") {
-        if (!(await confirm(io, "discard"))) return;
+        if (!(await confirm(io, `discard the edit of ${id}`))) return;
         await memory.owner.discard(s.id);
-        io.out(`Discarded the edit: lessons/${one(s.id)}.md is as it was armed.`);
+        io.out(`Discarded the edit: lessons/${id}.md is as it was armed.`);
       } else {
-        io.out(choice === "skip" ? "Skipped: the armed copy still applies." : `${one(choice) || "No answer"} is not arm, discard or skip: the armed copy still applies.`);
+        io.out(choice === "skip" ? "Skipped: the armed copy still applies." : "That is not arm, discard or skip: the armed copy still applies.");
       }
     });
   }
@@ -317,68 +399,70 @@ async function review(io: Io, memory: Memory): Promise<number> {
 
 // ---- the reads ----
 
-async function init(io: Io, home: string): Promise<number> {
+async function init(io: Door, home: string): Promise<number> {
   const { created } = await initHome(home);
   io.out(created ? `Made the memory at ${resolve(home)}.` : `The memory is at ${resolve(home)} already.`);
   return 0;
 }
 
-async function showStatus(io: Io, memory: Memory, json: boolean): Promise<number> {
+async function showStatus(io: Door, memory: Memory, json: boolean): Promise<number> {
   const s = await memory.status();
-  if (json) { io.out(jsonText(s)); return 0; }
+  if (json) { io.json(jsonText(s)); return 0; }
   io.out(statusLines(s).join("\n"));
   return 0;
 }
 
-async function lessons(io: Io, memory: Memory, json: boolean): Promise<number> {
+async function lessons(io: Door, memory: Memory, json: boolean): Promise<number> {
   const { cards } = await memory.status();
-  if (json) { io.out(jsonText(cards)); return 0; }
+  if (json) { io.json(jsonText(cards)); return 0; }
   if (cards.length === 0) { io.out("No lesson cards yet: write one in lessons/<id>.md, then run gravit-memory arm <id>."); return 0; }
-  const width = Math.max(...cards.map((c) => one(c.id).length));
+  const width = Math.max(...cards.map((c) => ident(c.id, LESSON_ID).length));
   const out: string[] = [];
   for (const c of cards) {
-    const head = c.card ? `  ${c.card.says} ${c.card.actions.join(", ")}, ${c.card.strength}` : "";
-    out.push(`${one(c.id).padEnd(width)}  ${c.state}${head}`);
+    const head = c.card ? `  ${cardWords(c.card)}` : "";
+    out.push(`${ident(c.id, LESSON_ID).padEnd(width)}  ${c.state}${head}`);
+    if (!LESSON_ID.test(c.id)) out.push("  file:", fence(`${c.id}.md`));
     if (c.card) out.push(fence(c.card.words));
-    if (c.fault) out.push(`  fault: ${one(c.fault)}`);
+    if (c.fault) out.push("  fault:", fence(c.fault));
   }
   io.out(out.join("\n"));
   return 0;
 }
 
-async function show(io: Io, memory: Memory, id: string, json: boolean): Promise<number> {
+async function show(io: Door, memory: Memory, id: string, json: boolean): Promise<number> {
   const shown = await memory.show(id);
-  if (json) { io.out(jsonText(shown)); return 0; }
+  if (json) { io.json(jsonText(shown)); return 0; }
   if ("decision" in shown) {
     io.out([...decisionLines(shown.decision), "Figures:", `  ${figuresText(shown.figures)}`].join("\n"));
     return 0;
   }
   const { card, record } = shown;
-  const out = [`${one(card.id)}: ${card.state}${card.armedAt ? `, armed on ${one(card.armedAt)}` : ""}${card.sha256 ? ` (${one(card.sha256.slice(0, 12))})` : ""}`];
-  if (card.fault) out.push(`fault: ${one(card.fault)}`);
+  const out = [`${ident(card.id, LESSON_ID)}: ${card.state}${card.armedAt ? `, armed on ${armedOn(card)}` : ""}`
+    + `${card.sha256 ? ` (${ident(card.sha256, SHA256).slice(0, 12)})` : ""}`];
+  if (card.fault) out.push(...field("fault", card.fault));
   if (card.card) out.push("", fence(renderCard(card.card).trimEnd()), "");
-  if (record) out.push("Record:", ...recordLines(record).map((l) => `  ${l}`));
+  if (record) out.push("Record:", ...recordLines(record).map((l) => (l.startsWith(FENCE) ? l : `  ${l}`)));
   io.out(out.join("\n"));
   return 0;
 }
 
-async function reconcile(io: Io, memory: Memory): Promise<number> {
+async function reconcile(io: Door, memory: Memory): Promise<number> {
   const r = await memory.reconcile(RECONCILER);
   if (r.source === null) { io.out("No price source is set: nothing was measured. Set prices.url in config.json."); return 0; }
   io.out(`Measured ${r.measured}, closed ${r.closed}, still due ${r.stillDue}, refused ${r.refused.length}, unmeasured ${r.unmeasured.length}.`);
-  for (const x of r.refused) io.out(`  refused: ${one(x.symbol)} in ${one(x.market)}: ${one(x.why)}`);
-  for (const x of r.unmeasured) io.out(`  unmeasured: ${one(x.decision)}: ${x.why}`);
+  if (r.refused.length > 0) io.out(["Refused, each its symbol, its market and why:", ...r.refused.map((x) => fence(`${x.symbol} in ${x.market}: ${x.why}`))].join("\n"));
+  for (const x of r.unmeasured) io.out(`  unmeasured: ${ident(x.decision, DECISION_ID)}: ${ident(x.why, /^no (symbol|market)$/)}`);
   return 0;
 }
 
-async function verify(io: Io, memory: Memory, json: boolean): Promise<number> {
+async function verify(io: Door, memory: Memory, json: boolean): Promise<number> {
   const v = await memory.verify();
-  if (json) { io.out(jsonText(v)); return v.ok ? 0 : 1; }
+  if (json) { io.json(jsonText(v)); return v.ok ? 0 : 1; }
   if (v.ok) { io.out("Sound: every chain holds, every id a line points at is there, no armed card is broken."); return 0; }
   const out = ["Not sound:"];
   for (const ch of v.chains) if (!ch.ok) out.push(`  ${ch.file}: the chain breaks at line ${ch.line ?? "?"}`);
-  for (const d of v.dangling) out.push(`  ${d.file} line ${d.line}: points at ${one(d.points_at)}, which is not there`);
-  for (const c of v.cards) if (c.state === "broken") out.push(`  lesson ${one(c.id)} is broken: ${one(c.fault ?? "")}`);
+  for (const d of v.dangling) out.push(`  ${d.file} line ${d.line}: points at an id that is not there:`, fence(d.points_at));
+  for (const c of v.cards) if (c.state === "broken") out.push(`  lesson ${ident(c.id, LESSON_ID)} is broken:`, fence(c.fault ?? ""));
   io.out(out.join("\n"));
   return 1;
 }
@@ -391,6 +475,11 @@ async function cardOf(memory: Memory, lesson: string): Promise<CardState> {
   const state = (await memory.status()).cards.find((c) => c.id === lesson);
   if (!state) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
   return state;
+}
+
+/** When a card was armed, as an ISO time, or "an earlier day". */
+function armedOn(s: CardState): string {
+  return s.armedAt === undefined ? "an earlier day" : ident(s.armedAt, ISO_TIME);
 }
 
 function checkReason(reason: string): void {
@@ -410,7 +499,7 @@ async function readBytes(path: string): Promise<Buffer | null> {
   }
 }
 
-/** Lines only in the armed copy marked "-", lines only in the working file's text (as read) marked "+". */
+/** Lines only in the armed copy marked "-", lines only in the working file's text (as read) marked "+", all fenced. */
 async function difference(home: string, s: CardState, working: string | null): Promise<string> {
   const armed = s.sha256 ? await readText(armedPath(home, s.id, s.sha256)) : null;
   const linesOf = (t: string | null) => (t ?? "").replaceAll("\r\n", "\n").split("\n").filter((l, i, all) => i < all.length - 1 || l !== "");
@@ -421,52 +510,55 @@ async function difference(home: string, s: CardState, working: string | null): P
     for (const y of ys) left.set(y, (left.get(y) ?? 0) + 1);
     return xs.filter((x) => { const n = left.get(x) ?? 0; if (n > 0) { left.set(x, n - 1); return false; } return true; });
   };
-  const out = [...only(a, w).map((l) => `${FENCE}- ${l}`), ...only(w, a).map((l) => `${FENCE}+ ${l}`)];
+  const out = [...only(a, w).map((l) => fence(`- ${l}`)), ...only(w, a).map((l) => fence(`+ ${l}`))];
   if (armed === null) out.unshift("(its armed copy is missing)");
-  if (working === null) out.unshift(`(lessons/${one(s.id)}.md is gone)`);
+  if (working === null) out.unshift(`(lessons/${ident(s.id, LESSON_ID)}.md is gone)`);
   return out.length > 0 ? out.join("\n") : "(no line differs; the bytes do, such as line ends)";
 }
 
 function pct(n: number | null): string {
-  return n === null ? "n/a" : `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+  return typeof n !== "number" || !Number.isFinite(n) ? "n/a" : `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
 function figuresText(figures: Figure[]): string {
   if (figures.length === 0) return "none";
-  return figures.map((f) => `${f.k}d ${pct(f.change_pct)}${f.vs_benchmark_pct !== null ? ` (${pct(f.vs_benchmark_pct)} vs benchmark)` : ""}`).join(", ");
+  return figures.map((f) => `${Number.isInteger(f.k) ? f.k : "?"}d ${pct(f.change_pct)}${f.vs_benchmark_pct !== null ? ` (${pct(f.vs_benchmark_pct)} vs benchmark)` : ""}`).join(", ");
 }
 
 const BASE = new Set(["v", "kind", "id", "seq", "prev", "t", "by", "sum"]);
 
-/** A line's own fields, each a labelled value (a JSON value on one line), indented by `indent`. */
+/** A line's own fields, each a label indented by `indent` with its value fenced beneath (a JSON value on one line). */
 function fieldLines(obj: object, skip: Set<string>, indent: string): string[] {
-  return Object.entries(obj).filter(([k]) => !skip.has(k)).flatMap(([k, v]) => {
-    const [head, ...rest] = field(`${indent}${one(k)}`, typeof v === "string" ? v : JSON.stringify(v));
-    return [head!, ...rest];
-  });
+  return Object.entries(obj).filter(([k]) => !skip.has(k))
+    .flatMap(([k, v]) => field(`${indent}${ident(k, /^[a-z_]{1,32}$/)}`, typeof v === "string" ? v : JSON.stringify(v)));
 }
 
+/** A decision's head, of validated pieces alone; its other fields, symbol and market among them, fenced beneath. */
 function decisionLines(v: DecisionView): string[] {
   const l = v.line;
-  const on = l.symbol !== undefined ? ` ${one(l.symbol)}${l.market !== undefined ? ` in ${one(l.market)}` : ""}` : "";
-  const out = [`Decision ${one(l.id)}${v.void ? " (void)" : ""}: ${one(l.action)}${on}, whose ${one(l.whose)}, registered ${one(l.t)} by ${one(l.by)}`,
-    ...fieldLines(l, new Set([...BASE, "action", "whose", "symbol", "market"]), "  ")];
+  const out = [`Decision ${ident(l.id, DECISION_ID)}${v.void ? " (void)" : ""}: ${ident(l.action, ACTION)}, whose ${ident(l.whose, WHOSE)}, `
+    + `registered ${ident(l.t, ISO_TIME)} by ${ident(l.by, WRITER)}`, ...fieldLines(l, new Set([...BASE, "action", "whose"]), "  ")];
   if (v.amends.length > 0) {
     out.push("Amendments:");
     for (const a of v.amends) {
-      out.push(`  ${one(a.id)} ${one(a.t)} by ${one(a.by)}: ${one(a.what)}`, ...fieldLines(a, new Set([...BASE, "decision", "what"]), "    "));
+      out.push(`  ${ident(a.id, LINE_ID)} ${ident(a.t, ISO_TIME)} by ${ident(a.by, WRITER)}: ${ident(a.what, /^(ref|close|review|correction|void)$/)}`,
+        ...fieldLines(a, new Set([...BASE, "decision", "what"]), "    "));
     }
   }
   return out;
 }
 
+/** One past case: its decision, date and action, and the instrument it was on — fenced, as a symbol is free text. */
+function caseText(c: { decision: string; date: string; action: string; symbol?: string }): string {
+  return fence(`${c.decision} ${c.date} ${c.action}${c.symbol !== undefined ? ` ${c.symbol}` : ""}`);
+}
+
 function recordLines(r: CardRecord): string[] {
   const o = r.owner;
-  const cases = (name: string, xs: CardRecord["followed"]) =>
-    xs.length === 0 ? [] : [`${name}: ${xs.map((c) => one(`${c.decision} ${c.date} ${c.action}${c.symbol ? ` ${c.symbol}` : ""}`)).join("; ")}`];
+  const cases = (name: string, xs: CardRecord["followed"]) => (xs.length === 0 ? [] : [`${name}:`, ...xs.map(caseText)]);
   const medians = (name: string, m: Record<number, number>) => {
     const ks = Object.keys(m);
-    return ks.length === 0 ? [] : [`median ${name}: ${ks.map((k) => `${k}d ${pct(m[Number(k)] ?? null)}`).join(", ")}`];
+    return ks.length === 0 ? [] : [`median ${name}: ${ks.map((k) => `${ident(k, /^\d{1,3}$/)}d ${pct(m[Number(k)] ?? null)}`).join(", ")}`];
   };
   return [
     `the owner: fired ${o.fired}, followed ${o.followed}, overridden ${o.overridden}, seen ${o.seen}, backfilled ${o.backfilled}, no decision ${o.no_decision}`,
@@ -492,46 +584,49 @@ function statusLines(s: Status): string[] {
     : `Lessons: ${s.cards.length} (${[...states].map(([state, k]) => `${k} ${state}`).join(", ")})`);
   if (s.facts.length > 0) {
     out.push("Facts the applying lessons need:");
-    for (const f of s.facts) out.push(`  ${one(f.fact)} (${one(f.card)}): ${one(f.definition)}`);
+    for (const f of s.facts) out.push(`  ${ident(f.fact, FACT_NAME)} (${ident(f.card, LESSON_ID)}):`, fence(f.definition));
   }
-  if (s.tags.length > 0) out.push(`Tags: ${s.tags.map((t) => `${one(t.tag)} ${t.count}`).join(", ")}`);
+  if (s.tags.length > 0) out.push("Tags, each with how many decisions carry it:", ...s.tags.map((t) => fence(`${t.tag} ${t.count}`)));
   if (s.prices.url === "") {
     out.push("Prices: no price source: set prices.url in config.json");
   } else {
     const last = s.prices.last;
-    out.push(`Prices: ${one(s.prices.url)}${last ? `; last reconcile ${one(last.t)}, ${last.ok ? "answered" : "did not answer"}, ${last.refused} refused` : "; never reconciled"}`);
+    out.push("Prices: the price source is", fence(s.prices.url),
+      last ? `  last reconcile ${ident(last.t, ISO_TIME)}, ${last.ok ? "answered" : "did not answer"}, ${last.refused} refused` : "  never reconciled");
   }
   return out;
 }
 
-function pastLine(p: PastDecision): string {
-  return `${one(`${p.id} ${p.date} ${p.action}${p.symbol ? ` ${p.symbol}` : ""}, whose ${p.whose}`)}: ${figuresText(p.figures)}`;
+function pastLines(p: PastDecision): string[] {
+  const head = `  ${ident(p.id, DECISION_ID)} ${ident(p.date, ISO_TIME)} ${ident(p.action, ACTION)}, whose ${ident(p.whose, WHOSE)}: ${figuresText(p.figures)}`;
+  return p.symbol !== undefined ? [head, fence(`on ${p.symbol}`)] : [head];
 }
 
 function reviewLines(r: Review): string[] {
   const out = [Date.parse(r.since) === 0 ? "Review, from the start" : `Review since ${r.since}`, ""];
-  out.push(`Decisions measured: ${r.measured.length}`, ...r.measured.map((p) => `  ${pastLine(p)}`));
+  out.push(`Decisions measured: ${r.measured.length}`, ...r.measured.flatMap(pastLines));
   out.push(`Lessons with a record: ${r.cards.length}`);
   for (const c of r.cards) {
     const flags = [c.quiet ? "quiet" : "", c.overridden_often ? "overridden often" : ""].filter(Boolean);
-    out.push(`  ${one(c.id)}${flags.length > 0 ? ` (${flags.join(", ")})` : ""}`, ...recordLines(c.record).map((l) => `    ${l}`));
+    out.push(`  ${ident(c.id, LESSON_ID)}${flags.length > 0 ? ` (${flags.join(", ")})` : ""}`,
+      ...recordLines(c.record).map((l) => (l.startsWith(FENCE) ? l : `    ${l}`)));
   }
   if (r.tags_shared.length > 0) {
-    out.push("Tags shared by several decisions:", ...r.tags_shared.map((t) => `  ${one(t.tag)}: ${one(t.decisions.join(", "))}`));
+    out.push("Tags shared by several decisions:", ...r.tags_shared.map((t) => fence(`${t.tag}: ${t.decisions.join(", ")}`)));
   }
-  out.push(`Past their horizon, without a review: ${r.past_horizon.length === 0 ? "none" : one(r.past_horizon.join(", "))}`);
+  out.push(`Past their horizon, without a review: ${r.past_horizon.length === 0 ? "none" : r.past_horizon.map((id) => ident(id, DECISION_ID)).join(", ")}`);
   out.push(`Decisions without wrong_if: ${r.without_wrong_if}`);
-  if (r.voided.length > 0) out.push(`Voided: ${one(r.voided.map((x) => `${x.decision} by ${x.by}`).join(", "))}`);
+  if (r.voided.length > 0) out.push(`Voided: ${r.voided.map((x) => `${ident(x.decision, DECISION_ID)} by ${ident(x.by, WRITER)}`).join(", ")}`);
   out.push(`Proposals waiting: ${r.proposals.length}`);
   return out;
 }
 
 function proposalLines(p: ProposalLine): string[] {
-  const verb = p.what === "new" ? "add" : p.what;
-  const out = [`Proposal ${one(`${p.id} by ${p.by}, ${p.t}: ${verb} lesson ${p.lesson}`)}`];
+  const verb = p.what === "new" ? "add" : ident(p.what, /^(change|retire)$/);
+  const out = [`Proposal ${ident(p.id, PROPOSAL_ID)} by ${ident(p.by, AGENT_NAME)}, ${ident(p.t, ISO_TIME)}: ${verb} lesson ${ident(p.lesson, LESSON_ID)}`];
   if (p.card) out.push("", fence(renderCard(p.card).trimEnd()), "");
   out.push(...field("Reason", p.reason));
-  if (p.evidence && p.evidence.length > 0) out.push(`Evidence: ${p.evidence.map(one).join(", ")}`);
+  if (p.evidence && p.evidence.length > 0) out.push("Evidence:", ...p.evidence.map(fence));
   return out;
 }
 
@@ -560,6 +655,7 @@ export function makeAsk(input: Readable, output: Writable): (question: string) =
 
 function processIo(): Io {
   return {
+    columns: process.stdout.columns,
     out: (text) => { process.stdout.write(`${text}\n`); },
     err: (text) => { process.stderr.write(`${text}\n`); },
     isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
@@ -589,7 +685,7 @@ export function isEntry(argv1: string | undefined, moduleUrl: string, platform: 
 
 if (isEntry(process.argv[1], import.meta.url, process.platform)) {
   runCli(process.argv.slice(2), processIo()).then((code) => { process.exitCode = code; }, (err: unknown) => {
-    process.stderr.write(`gravit-memory failed: ${visible(one(err instanceof Error ? err.message : String(err)))}\n`);
+    process.stderr.write(`gravit-memory failed:\n${rows(visible(fence(err instanceof Error ? err.message : String(err))), columnsOf(process.stderr.columns))}\n`);
     process.exitCode = 1;
   });
 }

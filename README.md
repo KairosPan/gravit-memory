@@ -150,9 +150,11 @@ An answer to a proposal never writes over a lessons file of yours that you have 
 | `gravit-memory mcp --as <name>` | serves the agent's door over stdio |
 
 `review`, `arm`, `retire`, `void` and `reseal` are the owner's acts. Each runs only at a terminal, shows what will
-change, and asks you to type `yes`; anything else changes nothing, and no flag answers for you. Text from the home is
-shown behind a fence (`  | ` before each line), with control and format characters written out as escapes, so that
-nothing in a card or a decision can pose as the command's own words.
+change, and asks you to type `yes` to an act it names with its object (`Type yes to arm no-chasing-after-a-run
+(caveat, dont buy/add, sha 1a2b3c4d5e6f):`); anything else changes nothing, and no flag answers for you. Text from
+the home is shown beneath its label behind a fence (`  | ` before each line), with control and format characters
+written out as escapes, and every line is cut to the terminal's width with the fence on each further row, so that
+nothing in a card or a decision can pose as the command's own words, however long it is.
 
 `gravit-memory reconcile` writes its outcome lines under the name `command-line`; do not give an agent that name.
 
