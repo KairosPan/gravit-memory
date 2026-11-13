@@ -13,7 +13,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { MemoryError } from "./errors.js";
 import { resolveHome } from "./home.js";
-import { openMemory, type Memory } from "./index.js";
+import { openMemory, type CardState, type Memory, type Status } from "./index.js";
 import { AGENT_NAME } from "./limits.js";
 import { amendInput, decisionInput, parseInput, proposalInput, recallInput } from "./schema.js";
 import type { Deps } from "./types.js";
@@ -214,7 +214,7 @@ export function buildServer(memory: Memory, as: string): McpServer {
     noFields,
     async (args) => {
       parseInput(noFields, args, "a status");
-      const s = await memory.status();
+      const s = agentsStatus(await memory.status());
       const armed = s.cards.filter((c) => c.state === "armed").length;
       const broken = s.chains.filter((c) => !c.ok).map((c) => c.file);
       const chains = broken.length === 0 ? "every chain holds" : `broken chains: ${broken.join(", ")}`;
@@ -223,6 +223,18 @@ export function buildServer(memory: Memory, as: string): McpServer {
     });
 
   return server;
+}
+
+/**
+ * The status as an agent is given it: a card that applies (armed, or changed since and applying as armed, while
+ * owner.jsonl's chain holds) with its armed copy's content; any other card as its id, its state and its fault alone,
+ * so no words the owner has not armed reach an agent. The core and the command line keep the full Status.
+ */
+function agentsStatus(s: Status): Status {
+  const ownerHolds = s.chains.find((c) => c.file === "owner.jsonl")?.ok !== false;
+  const cards = s.cards.map((c): CardState => (ownerHolds && (c.state === "armed" || c.state === "changed")
+    ? c : { id: c.id, state: c.state, ...(c.fault !== undefined ? { fault: c.fault } : {}) }));
+  return { ...s, cards };
 }
 
 /** The streams runMcp uses; the process's own when none are given. */

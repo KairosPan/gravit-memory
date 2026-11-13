@@ -58,6 +58,7 @@ agents you would show all of it to.
 The server gives the agent short instructions of its own on when to call each tool.
 
 - `memory_status` — which facts the owner's lessons need and how each is defined, and the state of the memory.
+  A card that applies is given as armed; any other is given by its id, state and fault, never its words.
 - `memory_reconcile` — measures registered decisions against the price source's daily closes; called when work
   starts.
 - `memory_recall` — called before recommending, placing or advising on a trade, or advising to hold or stay out:

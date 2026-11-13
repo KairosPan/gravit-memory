@@ -280,3 +280,40 @@ test("only reconcile reaches the network", async () => {
   await call(one, "memory_reconcile");
   expect(fetches).toBeGreaterThan(0);
 });
+
+test("memory_status gives an agent the words of the applying cards alone, as armed", async () => {
+  const card = (id: string, words = "Stand-in words for a test.") =>
+    `---\nid: ${id}\nsays: dont\nactions: [buy]\nstrength: caveat\n---\n${words}\n`;
+  for (const id of ["card-armed", "card-changed", "card-retired", "card-broken"]) {
+    await writeCard(home, card(id));
+    await memory.owner.arm(id);
+  }
+  await writeCard(home, card("card-changed", "Edited words, not armed."));
+  await memory.owner.retire("card-retired", "Done with it.");
+  await writeCard(home, card("card-unarmed", "Unarmed words."));
+  await writeFile(join(home, "lessons", "card-refused.md"), "no front matter, refused words\n");
+  const broken = (await memory.status()).cards.find((s) => s.id === "card-broken")!;
+  await writeFile(join(home, "armed", `card-broken.${broken.sha256!.slice(0, 12)}.md`), card("card-broken", "Broken words."));
+
+  const st = await call(one, "memory_status");
+  const byId: Record<string, Record<string, unknown>> = Object.fromEntries((st.cards as Array<Record<string, unknown>>).map((x) => [x.id, x]));
+  expect(Object.fromEntries(Object.entries(byId).map(([id, x]) => [id, x.state]))).toEqual({ "card-armed": "armed",
+    "card-broken": "broken", "card-changed": "changed", "card-refused": "refused", "card-retired": "retired", "card-unarmed": "unarmed" });
+  expect((byId["card-armed"]!.card as { words: string }).words).toBe("Stand-in words for a test.");
+  expect((byId["card-changed"]!.card as { words: string }).words).toBe("Stand-in words for a test.");    // the armed copy's
+  for (const id of ["card-unarmed", "card-retired", "card-refused", "card-broken"]) {
+    expect(Object.keys(byId[id]!).every((k) => ["id", "state", "fault"].includes(k)), id).toBe(true);
+  }
+  expect(byId["card-refused"]!.fault).toEqual(expect.any(String));
+  expect(byId["card-broken"]!.fault).toEqual(expect.any(String));
+  const seen = JSON.stringify(st);
+  for (const words of ["Edited words", "Unarmed words", "refused words", "Broken words"]) expect(seen, words).not.toContain(words);
+
+  const full = await memory.status();                                               // the core and the command line keep it all
+  expect(full.cards.find((x) => x.id === "card-unarmed")!.card!.words).toBe("Unarmed words.");
+
+  const owner = join(home, "owner.jsonl");                                          // a broken owner's chain: nothing applies
+  await writeFile(owner, (await readFile(owner, "utf8")).replace("card-armed", "card-armex"));
+  const after = await call(one, "memory_status");
+  expect(JSON.stringify(after)).not.toContain("Stand-in words");
+});
