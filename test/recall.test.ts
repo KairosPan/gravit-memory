@@ -9,7 +9,7 @@ import { arm } from "../src/owner.js";
 import { recall, type AppliedCard, type PastDecision, type RecallAnswer, type UntoldCard } from "../src/recall.js";
 import type { CardRecord } from "../src/records.js";
 import { FRAME, renderRecall } from "../src/render.js";
-import { RECALL_MAX_BYTES } from "../src/limits.js";
+import { RECALL_MAX_BYTES, RECALL_STRUCT_MAX_BYTES } from "../src/limits.js";
 import type { Card, Deps, OwnerLine, ProposalLine, RecallLine } from "../src/types.js";
 import { DAY, HOUR, STAND_IN_CARD, clock, tempHome, writeCard } from "./helpers.js";
 
@@ -261,6 +261,45 @@ test("the 4,000 bytes hold, and a card's words are never cut", async () => {
   expect(a.applies.length + a.applies_more).toBe(5);
   expect(a.applies.length).toBeGreaterThan(0);
 });
+
+/** The answer is as short in structure as in text: under the bound, and every case it carries is in the text. */
+function boundedAsShown(a: RecallAnswer): void {
+  expect(RECALL_STRUCT_MAX_BYTES).toBe(16_000);
+  expect(Buffer.byteLength(JSON.stringify(a))).toBeLessThan(RECALL_STRUCT_MAX_BYTES);
+  for (const card of a.applies) {
+    for (const x of [...card.record.followed, ...card.record.overridden, ...card.record.backfilled]) expect(a.text).toContain(x.decision);
+  }
+  for (const d of [...a.same, ...a.like]) {
+    expect(a.text).toContain(d.id);
+    expect(a.text).toContain(JSON.stringify(d.thesis));
+  }
+}
+
+test("the structure of the 4,000-byte store is as short as its text", async () => {
+  const words = "涨".repeat(200);
+  for (const id of ["card-a", "card-b", "card-c", "card-d", "card-e"]) await armCard(id, { words });
+  const tags = ["theme:ai"];
+  for (const symbol of ["NVDA", "NVDA", "NVDA", "AMD", "AVGO", "SMCI"]) {
+    await decide({ ...nvda, symbol, thesis: "跌".repeat(1000), wrong_if: "险".repeat(500), tags });
+    c.advance(HOUR);
+  }
+  boundedAsShown(await recall(home, "agent-one", { ...ask, tags }, deps));
+});
+
+test("after 120 occasions the structure stays bounded, the counts whole", async () => {
+  await armCard();
+  for (let i = 0; i < 120; i++) {
+    c.advance(26 * HOUR);
+    const r = await recall(home, "agent-one", { ...ask, symbol: `SYM${i}` }, deps);
+    await decide({ ...nvda, action: i % 2 ? "pass" : "buy", symbol: `SYM${i}`, thesis: "t".repeat(300), wrong_if: "w".repeat(200), recall: r.recall_id });
+  }
+  c.advance(26 * HOUR);
+  const a = await recall(home, "agent-one", { ...ask, symbol: "SYM1" }, deps);
+  boundedAsShown(a);
+  const r = a.applies[0]!.record;
+  expect(r.owner.followed + r.owner.overridden).toBe(120);
+  expect(r.followed.length + r.overridden.length).toBeLessThan(120);
+}, 60_000);
 
 test("untold lessons yield before any applying card", async () => {
   const words = "涨".repeat(200);

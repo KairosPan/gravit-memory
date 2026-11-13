@@ -6,7 +6,11 @@
 // theses, conditions and untold cards' definitions are cut short with a mark; like decisions go; the same
 // instrument's go; untold cards go from the end; last, applying cards are shown fewer, caveats before red lines. An
 // applying card's words are never cut, and an applying card goes only when nothing else is left to yield.
-import { RECALL_MAX_BYTES } from "./limits.js";
+//
+// The answer's structure is the text's, never more: what the text leaves out is left out of it, what it cuts is cut,
+// a record's case lists hold only the cases the text names (its counts stay whole), and the whole answer is held
+// within RECALL_STRUCT_MAX_BYTES as the text is within RECALL_MAX_BYTES.
+import { RECALL_MAX_BYTES, RECALL_STRUCT_MAX_BYTES } from "./limits.js";
 import type { Case, CardRecord, Figure } from "./records.js";
 import type { AppliedCard, House, PastDecision, RecallAnswer, UntoldCard } from "./recall.js";
 
@@ -90,34 +94,50 @@ export function renderRecall(a: Answer): string {
 }
 
 /**
- * The text, and the answer as the text shows it: an untold card the last steps leave out moves into `untold_more`,
- * an applying one from `applies` into `applies_more`.
+ * The text, and the answer as the text shows it (`shownAs`): an untold card the last steps leave out moves into
+ * `untold_more`, an applying one from `applies` into `applies_more`.
  */
 export function fitRecall(a: Answer): { answer: Answer; text: string } {
-  let text = "";
+  let out = { answer: a, text: "" };
   for (const shape of SHAPES) {
-    text = render(a, shape);
-    if (fits(text)) return { answer: a, text };
+    out = { answer: shownAs(a, shape), text: render(a, shape) };
+    if (fits(out)) return out;
   }
   const last = SHAPES.at(-1)!;
   let cur = a;
   while (cur.untold.length > 0) {
     cur = { ...cur, untold: cur.untold.slice(0, -1), untold_more: cur.untold_more + 1 };
-    text = render(cur, last);
-    if (fits(text)) return { answer: cur, text };
+    out = { answer: shownAs(cur, last), text: render(cur, last) };
+    if (fits(out)) return out;
   }
   while (cur.applies.length > 0) {
     const i = cur.applies.findLastIndex((c) => c.strength === "caveat");
     const at = i === -1 ? cur.applies.length - 1 : i;
     cur = { ...cur, applies: cur.applies.filter((_, j) => j !== at), applies_more: cur.applies_more + 1 };
-    text = render(cur, last);
-    if (fits(text)) return { answer: cur, text };
+    out = { answer: shownAs(cur, last), text: render(cur, last) };
+    if (fits(out)) return out;
   }
-  return { answer: cur, text };
+  return out;
 }
 
-function fits(text: string): boolean {
-  return Buffer.byteLength(text) <= RECALL_MAX_BYTES;
+function fits({ answer, text }: { answer: Answer; text: string }): boolean {
+  return Buffer.byteLength(text) <= RECALL_MAX_BYTES
+    && Buffer.byteLength(JSON.stringify({ ...answer, text })) < RECALL_STRUCT_MAX_BYTES;
+}
+
+/** The answer as a shape's text shows it: cases, theses, conditions and definitions as shown, groups left out gone. */
+function shownAs(a: Answer, s: Shape): Answer {
+  const cases = (xs: Case[]): Case[] => (s.fullRecords ? xs : xs.slice(-1));
+  const past = (d: PastDecision): PastDecision => ({ ...d, thesis: short(d.thesis, s.cut),
+    ...(d.wrong_if !== undefined ? { wrong_if: short(d.wrong_if, s.cut) } : {}) });
+  return {
+    ...a,
+    applies: a.applies.map((c) => ({ ...c, record: { ...c.record, followed: cases(c.record.followed),
+      overridden: cases(c.record.overridden), backfilled: cases(c.record.backfilled) } })),
+    untold: a.untold.map((u) => ({ ...u, needs: u.needs.map((n) => (n.what === "market" ? n : { ...n, definition: short(n.definition, s.cut) })) })),
+    same: s.same ? a.same.map(past) : [],
+    like: s.like ? a.like.map(past) : [],
+  };
 }
 
 function render(a: Answer, s: Shape): string {
@@ -155,12 +175,12 @@ function record(r: CardRecord, full: boolean): string[] {
   const lines = [`  ${F.record} ${F.fired} ${o.fired} · ${F.ownerSide} ${F.followed} ${o.followed}, ${F.overridden} ${o.overridden}, `
     + `${F.seen} ${o.seen}, ${F.backfilled} ${o.backfilled}, ${F.noDecision} ${o.no_decision} · ${F.agentsSide} `
     + `${F.followed} ${g.followed}, ${F.overridden} ${g.overridden}, ${F.seen} ${g.seen}`];
-  const groups: Array<[string, Case[], Record<number, number> | undefined]> = [
-    [F.followed, r.followed, r.medians.followed],
-    [F.overridden, r.overridden, r.medians.overridden],
-    [F.backfilled, r.backfilled, undefined],
+  const groups: Array<[string, Case[], number, Record<number, number> | undefined]> = [
+    [F.followed, r.followed, o.followed, r.medians.followed],
+    [F.overridden, r.overridden, o.overridden, r.medians.overridden],
+    [F.backfilled, r.backfilled, o.backfilled, undefined],
   ];
-  for (const [name, cases, medians] of groups) {
+  for (const [name, cases, count, medians] of groups) {
     if (cases.length === 0) continue;
     const median = medians && Object.keys(medians).length > 0
       ? `; ${F.median} ${Object.entries(medians).map(([k, v]) => `${k}d ${pct(v)}`).join(", ")}` : "";
@@ -168,7 +188,7 @@ function record(r: CardRecord, full: boolean): string[] {
       for (const c of cases) lines.push(`  ${name} ${caseHead(c)}: ${figures(c.figures)}`);
       if (median !== "") lines.push(`  ${name}${median}`);
     } else {
-      lines.push(`  ${name}: ${cases.length} ${F.cases} ${caseHead(cases.at(-1)!)}${median}`);
+      lines.push(`  ${name}: ${Math.max(count, cases.length)} ${F.cases} ${caseHead(cases.at(-1)!)}${median}`);
     }
   }
   return lines;
