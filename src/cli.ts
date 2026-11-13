@@ -5,17 +5,20 @@
 // The owner's acts (arm, retire, void, reseal, and review as a whole) refuse to run without a terminal before anything
 // is read from or written to the home, and no flag answers for the owner. Each shows what will change, then asks
 // `Type yes to <act>:`; anything but exactly `yes` changes nothing. They reach the core only through Memory.owner.
-// Exit codes: 0 done; 1 nothing changed, a refusal, or verify not sound; 2 misuse.
+// Exit codes: 0 done; 1 nothing changed, a refusal, or verify not sound; 2 misuse. Every word that reaches the terminal
+// passes `visible` first, so text from the home cannot carry a control character that hides or forges what is shown.
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import type { Readable } from "node:stream";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { armedPath, lessonPath, renderCard } from "./cards.js";
 import { MemoryError } from "./errors.js";
 import { initHome, resolveHome } from "./home.js";
+import { sha256Hex } from "./ids.js";
 import { openMemory, type CardRecord, type CardState, type DecisionView, type Figure, type Memory, type PastDecision,
   type Review, type Status } from "./index.js";
 import { LESSON_ID, REASON_MAX } from "./limits.js";
@@ -54,8 +57,20 @@ function usage(): string {
     "The owner's acts (review, arm, retire, void, reseal) run only at a terminal, and each asks you to type yes."].join("\n");
 }
 
+const CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g;
+
+/**
+ * The text with every C0 and C1 control character but the newline (tab included) and DEL written as a visible
+ * \uXXXX escape. Inside a JSON document's string that escape is JSON's own, so the document reads back the same.
+ */
+export function visible(text: string): string {
+  return text.replace(CONTROL, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 /** Runs one command line; the answer is the exit code: 0 done, 1 nothing changed or a refusal, 2 misuse. */
-export async function runCli(argv: string[], io: Io, deps?: Deps): Promise<number> {
+export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<number> {
+  const io: Io = { isTTY: raw.isTTY, env: raw.env, out: (t) => raw.out(visible(t)), err: (t) => raw.err(visible(t)),
+    ask: (q) => raw.ask(visible(q)) };
   const [name, ...rest] = argv;
   const cmd = name !== undefined && Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
   if (name === undefined || cmd === undefined) {
@@ -139,20 +154,21 @@ async function arm(io: Io, memory: Memory, lesson: string): Promise<number> {
     io.out(NOTHING);
     return 1;
   }
-  const text = await readText(lessonPath(memory.home, lesson));
-  if (text === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
+  const bytes = await readBytes(lessonPath(memory.home, lesson));       // read once: shown, then armed only if unchanged
+  if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
+  const text = bytes.toString("utf8");
   io.out(`Arm lesson ${lesson} as its file is now:`);
   io.out("");
   io.out(text.trimEnd());
   io.out("");
   if (state.state === "changed" || state.state === "broken") {
     io.out(`This replaces the card armed on ${state.armedAt ?? "an earlier day"}. The difference from the armed copy:`);
-    io.out(await difference(memory.home, state));
+    io.out(await difference(memory.home, state, text));
   } else if (state.state === "retired") {
     io.out("This arms again a lesson that was retired.");
   }
   if (!(await confirm(io, "arm"))) return 1;
-  const { sha256 } = await memory.owner.arm(lesson);
+  const { sha256 } = await memory.owner.arm(lesson, sha256Hex(bytes));
   io.out(`Armed lesson ${lesson} (${sha256.slice(0, 12)}).`);
   return 0;
 }
@@ -249,12 +265,14 @@ async function review(io: Io, memory: Memory): Promise<number> {
   for (const s of changed) {
     await each(async () => {
       io.out("");
+      const bytes = await readBytes(lessonPath(memory.home, s.id));    // read once: shown, then armed only if unchanged
       io.out(`Lesson ${s.id} has changed since it was armed on ${s.armedAt ?? "an earlier day"}:`);
-      io.out(await difference(memory.home, s));
+      io.out(await difference(memory.home, s, bytes === null ? null : bytes.toString("utf8")));
       const choice = (await io.ask("Answer arm, discard or skip: ")).trim();
       if (choice === "arm") {
         if (!(await confirm(io, "arm"))) return;
-        const { sha256 } = await memory.owner.arm(s.id);
+        if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${s.id} has no file: write lessons/${s.id}.md first.`);
+        const { sha256 } = await memory.owner.arm(s.id, sha256Hex(bytes));
         io.out(`Armed lesson ${s.id} as its file is now (${sha256.slice(0, 12)}).`);
       } else if (choice === "discard") {
         if (!(await confirm(io, "discard"))) return;
@@ -351,18 +369,21 @@ function checkReason(reason: string): void {
 }
 
 async function readText(path: string): Promise<string | null> {
+  return (await readBytes(path))?.toString("utf8") ?? null;
+}
+
+async function readBytes(path: string): Promise<Buffer | null> {
   try {
-    return await readFile(path, "utf8");
+    return await readFile(path);
   } catch (err) {
     if ((err as { code?: unknown }).code === "ENOENT") return null;
     throw err;
   }
 }
 
-/** Lines only in the armed copy marked "-", lines only in the working file marked "+". */
-async function difference(home: string, s: CardState): Promise<string> {
+/** Lines only in the armed copy marked "-", lines only in the working file's text (as read) marked "+". */
+async function difference(home: string, s: CardState, working: string | null): Promise<string> {
   const armed = s.sha256 ? await readText(armedPath(home, s.id, s.sha256)) : null;
-  const working = await readText(lessonPath(home, s.id));
   const linesOf = (t: string | null) => (t ?? "").replaceAll("\r\n", "\n").split("\n").filter((l, i, all) => i < all.length - 1 || l !== "");
   const a = linesOf(armed);
   const w = linesOf(working);
@@ -484,37 +505,57 @@ function proposalLines(p: ProposalLine): string[] {
 
 // ---- the entry ----
 
+/**
+ * The real Io's ask over these streams: the line typed, or "" when the input closes (Ctrl-D, the end of a pipe) or the
+ * owner presses Ctrl-C while the question waits — so an unanswered question changes nothing.
+ */
+export function makeAsk(input: Readable, output: Writable): (question: string) => Promise<string> {
+  return (question) => new Promise<string>((done) => {
+    if (input.readableEnded || input.destroyed) { done(""); return; }
+    const rl = createInterface({ input, output });
+    let settled = false;
+    const finish = (answer: string): void => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      done(answer);
+    };
+    rl.once("close", () => { setImmediate(() => finish("")); });      // after a last line the input ended on
+    rl.once("SIGINT", () => { output.write("\n"); finish(""); });
+    rl.question(question).then(finish, () => finish(""));
+  });
+}
+
 function processIo(): Io {
   return {
     out: (text) => { process.stdout.write(`${text}\n`); },
     err: (text) => { process.stderr.write(`${text}\n`); },
     isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     env: process.env,
-    async ask(question) {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      try {
-        return await rl.question(question);
-      } catch {
-        return "";                                                   // the input closed: no answer, nothing changes
-      } finally {
-        rl.close();
-      }
-    },
+    ask: makeAsk(process.stdin, process.stdout),
   };
 }
 
-/** Whether this file is the process's entry, also through a symlink (npm's bin link) and on Windows. */
-function isEntry(): boolean {
-  const arg = process.argv[1];
-  if (arg === undefined) return false;
-  try {
-    return realpathSync(arg) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
+/**
+ * Whether the script the process was started with (argv1) is the module at moduleUrl: compared as real paths, so it
+ * holds through a symlink (npm's bin link), and without regard to case on Windows, where a drive letter's case varies.
+ */
+export function isEntry(argv1: string | undefined, moduleUrl: string, platform: NodeJS.Platform): boolean {
+  if (argv1 === undefined) return false;
+  const windows = platform === "win32";
+  const real = (path: string): string => {
+    try {
+      return realpathSync.native(path);
+    } catch {
+      return path;
+    }
+  };
+  const a = real(argv1);
+  const b = real(fileURLToPath(moduleUrl, { windows }));
+  return windows ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-if (isEntry()) {
+if (isEntry(process.argv[1], import.meta.url, process.platform)) {
   runCli(process.argv.slice(2), processIo()).then((code) => { process.exitCode = code; }, (err: unknown) => {
     process.stderr.write(`gravit-memory failed: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exitCode = 1;

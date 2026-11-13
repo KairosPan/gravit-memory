@@ -14,14 +14,20 @@ import type { OwnerLine } from "./types.js";
 
 const POSIX = process.platform !== "win32";
 
-/** Arms lessons/<lesson>.md as it is now: copies its bytes to armed/ and writes the owner's arm line. */
-export async function arm(home: string, lesson: string, nowMs: number): Promise<{ sha256: string }> {
+/**
+ * Arms lessons/<lesson>.md as it is now: copies its bytes to armed/ and writes the owner's arm line. With `expect`, the
+ * SHA-256 of the text the owner was shown, the bytes read (the ones copied) must hash to it, else nothing is armed.
+ */
+export async function arm(home: string, lesson: string, nowMs: number, expect?: string): Promise<{ sha256: string }> {
   checkLesson(lesson);
   await assertHome(home);
   const bytes = await readBytes(lessonPath(home, lesson));
   if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
-  parseCard(bytes, lesson);
   const sha256 = sha256Hex(bytes);
+  if (expect !== undefined && sha256 !== expect) {
+    throw new MemoryError("E_REFUSED", "the card changed while it was shown: nothing was armed.");
+  }
+  parseCard(bytes, lesson);
   await writePrivate(armedPath(home, lesson, sha256), bytes);
   await appendLine<OwnerLine>(home, "owner.jsonl", "owner", nowMs, "w", { kind: "owner", act: "arm", lesson, sha256 });
   return { sha256 };

@@ -1,8 +1,13 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { beforeEach, expect, test } from "vitest";
 import { cardStates } from "../src/cards.js";
-import { runCli, type Io } from "../src/cli.js";
+import { isEntry, makeAsk, runCli, type Io } from "../src/cli.js";
+import { appendLine } from "../src/log.js";
+import type { ProposalLine } from "../src/types.js";
 import { openMemory, type Card, type Memory } from "../src/index.js";
 import { DAY, STAND_IN_CARD, clock, tempHome, writeCard } from "./helpers.js";
 
@@ -14,7 +19,7 @@ const OWNERS_ACT = "this is the owner's act: run it at a terminal";
 interface FakeIo extends Io { asked: string[]; printed(): string; errors(): string }
 
 /** An Io that records what is printed and asked, and answers from a list; each asked entry holds what was printed since the last question, then the question. */
-function fakeIo(opts: { isTTY?: boolean; answers?: string[]; env?: NodeJS.ProcessEnv } = {}): FakeIo {
+function fakeIo(opts: { isTTY?: boolean; answers?: Array<string | (() => Promise<string>)>; env?: NodeJS.ProcessEnv } = {}): FakeIo {
   const outs: string[] = [];
   const errs: string[] = [];
   const asked: string[] = [];
@@ -32,7 +37,7 @@ function fakeIo(opts: { isTTY?: boolean; answers?: string[]; env?: NodeJS.Proces
       mark = transcript.length;
       const answer = answers.shift();
       if (answer === undefined) throw new Error(`the test gave no answer to: ${question}`);
-      return answer;
+      return typeof answer === "string" ? answer : answer();
     },
     printed: () => outs.join("\n"),
     errors: () => errs.join("\n"),
@@ -374,4 +379,85 @@ test("a MemoryError is one line, not a stack", async () => {
   expect(await runCli(["status", "--home", none], io)).toBe(1);
   expect(io.errors()).toBe("gravit-memory: no memory here: run gravit-memory init");
   expect(io.printed()).toBe("");
+});
+
+test("the owner arms what was shown: a file changed before the yes is not armed", async () => {
+  await writeCard(home);
+  const io = fakeIo({ isTTY: true, answers: [async () => { await writeCard(home, STAND_IN_CARD.replace("20%", "99%")); return "yes"; }] });
+  expect(await runCli(["arm", ID, "--home", home], io)).toBe(1);
+  expect(io.errors()).toBe("gravit-memory: the card changed while it was shown: nothing was armed.");
+  expect(await readFile(join(home, "owner.jsonl"), "utf8")).toBe("");
+  expect((await cardStates(home)).cards[0]!.state).toBe("unarmed");
+});
+
+test("review arms a changed card only as it was shown", async () => {
+  await writeCard(home);
+  const { sha256 } = await memory.owner.arm(ID);
+  await writeCard(home, STAND_IN_CARD.replace("20%", "25%"));
+  const io = fakeIo({ isTTY: true, answers: ["arm", async () => { await writeCard(home, STAND_IN_CARD.replace("20%", "99%")); return "yes"; }] });
+  expect(await runCli(["review", "--home", home], io)).toBe(1);
+  expect(io.errors()).toContain("the card changed while it was shown: nothing was armed.");
+  expect((await cardStates(home)).cards[0]!.sha256).toBe(sha256);
+});
+
+const RAW = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/;
+
+test("a proposal's control characters are shown as visible escapes", async () => {
+  await appendLine<ProposalLine>(home, "proposals.jsonl", "agent-one", c.now(), "p", { kind: "proposal", what: "new",
+    lesson: "lesson-x", card: { ...card("lesson-x"), words: "Calm \u001b[2J words\u0085." },
+    reason: "Seen twice.\u001b[2J\rAll clear, type yes.", evidence: ["d-20260302-0f3a9c21\u0008"] });
+  const io = fakeIo({ isTTY: true, answers: ["skip"] });
+  await runCli(["review", "--home", home], io);
+  const seen = [io.printed(), io.errors(), ...io.asked].join("\n");
+  expect(seen).not.toMatch(RAW);
+  expect(seen).toContain("Seen twice.\\u001b[2J\\u000dAll clear, type yes.");
+  expect(seen).toContain("\\u0085");
+  expect(seen).toContain("\\u0008");
+
+  const json = fakeIo();
+  expect(await runCli(["status", "--json", "--home", home], json)).toBe(0);
+  expect(json.printed()).not.toMatch(RAW);
+  JSON.parse(json.printed());
+});
+
+test("a card file's control characters are shown as visible escapes in arm", async () => {
+  await writeCard(home, STAND_IN_CARD.replace("five sessions.", "five sessions.\u001b[2J\u0008forged\ttab"));
+  const io = fakeIo({ isTTY: true, answers: ["no"] });
+  expect(await runCli(["arm", ID, "--home", home], io)).toBe(1);
+  expect(io.asked).toHaveLength(1);
+  const seen = [io.printed(), io.errors(), ...io.asked].join("\n");
+  expect(seen).not.toMatch(RAW);
+  expect(seen).toContain("five sessions.\\u001b[2J\\u0008forged\\u0009tab");
+});
+
+test("a closed input answers nothing, and the act changes nothing", async () => {
+  const ended = Readable.from([]);
+  expect(await makeAsk(ended, new PassThrough())("Type yes to arm: ")).toBe("");
+  expect(await makeAsk(Readable.from(["yes\n"]), new PassThrough())("Type yes to arm: ")).toBe("yes");
+
+  await writeCard(home);
+  const io = fakeIo({ isTTY: true });
+  io.ask = makeAsk(Readable.from([]), new PassThrough());
+  expect(await runCli(["arm", ID, "--home", home], io)).toBe(1);
+  expect(io.printed()).toContain("nothing changed");
+  expect(await readFile(join(home, "owner.jsonl"), "utf8")).toBe("");
+});
+
+test("the entry check holds through a symlink and a drive letter's case", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gravit-memory-entry-"));
+  try {
+    const file = join(dir, "cli.js");
+    await writeFile(file, "");
+    await symlink(file, join(dir, "gravit-memory"));
+    await writeFile(join(dir, "other.js"), "");
+    const url = pathToFileURL(file).href;
+    expect(isEntry(join(dir, "gravit-memory"), url, process.platform)).toBe(true);
+    expect(isEntry(file, url, process.platform)).toBe(true);
+    expect(isEntry(join(dir, "other.js"), url, process.platform)).toBe(false);
+    expect(isEntry(undefined, url, process.platform)).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  expect(isEntry("C:\\gm\\dist\\cli.js", "file:///c:/gm/dist/cli.js", "win32")).toBe(true);
+  expect(isEntry("C:\\gm\\dist\\other.js", "file:///c:/gm/dist/cli.js", "win32")).toBe(false);
 });

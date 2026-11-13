@@ -1,4 +1,4 @@
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { cardStates, type CardState } from "../src/cards.js";
@@ -113,6 +113,20 @@ test("arm refuses a card that does not parse", async () => {
   const id = await writeCard(home, STAND_IN_CARD.replace("says: dont", "says: never"));
   await fails(arm(home, id, c.now()), "E_CARD");
   expect(await readFile(join(home, "owner.jsonl"), "utf8")).toBe("");
+});
+
+test("arm arms only the bytes the owner was shown", async () => {
+  const id = await writeCard(home);
+  const shown = sha256Hex(STAND_IN_CARD);
+  await writeCard(home, STAND_IN_CARD.replace("20%", "25%"));
+  expect(await fails(arm(home, id, c.now(), shown), "E_REFUSED")).toBe("the card changed while it was shown: nothing was armed.");
+  expect(await readFile(join(home, "owner.jsonl"), "utf8")).toBe("");
+  expect(await readdir(join(home, "armed"))).toEqual([]);
+  expect((await stateOf(id)).state).toBe("unarmed");
+
+  const { sha256 } = await arm(home, id, c.now(), sha256Hex(STAND_IN_CARD.replace("20%", "25%")));
+  expect(await readFile(armedFile(id, sha256), "utf8")).toContain("25%");
+  expect((await stateOf(id)).state).toBe("armed");
 });
 
 test("arm refuses a lesson with no file", async () => {

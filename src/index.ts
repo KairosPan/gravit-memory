@@ -42,7 +42,7 @@ export interface Memory {
   status(): Promise<Status>;
   verify(): Promise<VerifyReport>;
   show(id: string): Promise<{ decision: DecisionView; figures: Figure[] } | { card: CardState; record: CardRecord | null }>;
-  owner: { arm(lesson: string): Promise<{ sha256: string }>; retire(lesson: string, reason: string): Promise<void>;
+  owner: { arm(lesson: string, expect?: string): Promise<{ sha256: string }>; retire(lesson: string, reason: string): Promise<void>;
     discard(lesson: string): Promise<void>; void(decision: string, reason: string): Promise<void>;
     reseal(): Promise<Array<{ file: LogFile; broke_at: number }>>;
     accept(proposal: string): Promise<{ lesson: string }>; edit(proposal: string): Promise<{ lesson: string; path: string }>;
@@ -79,7 +79,7 @@ export function openMemory(home: string, deps?: Deps): Memory {
     verify: () => inHome(() => verify(home)),
     show: (id) => inHome(() => show(home, id, now())),
     owner: {
-      arm: (lesson) => inHome(() => arm(home, lesson, now())),
+      arm: (lesson, expect) => inHome(() => arm(home, lesson, now(), expect)),
       retire: (lesson, reason) => inHome(() => retire(home, lesson, reason, now())),
       discard: (lesson) => inHome(() => discard(home, lesson, now())),
       void: (decision, reason) => inHome(async () => {
