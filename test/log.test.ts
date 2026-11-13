@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { sha256Hex } from "../src/ids.js";
@@ -37,13 +37,16 @@ async function editLine(file: string, n: number): Promise<void> {
   await writeFile(path, lines.join("\n"));
 }
 
-function run(cmd: string, args: string[]): Promise<void> {
+/** Runs a command to its end; its standard output. */
+function run(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
     let err = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { err += d.toString(); });
     child.on("error", reject);
-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}: ${err}`))));
+    child.on("exit", (code) => (code === 0 ? resolve(out) : reject(new Error(`exit ${code}: ${err}`))));
   });
 }
 
@@ -166,3 +169,60 @@ test("two processes lose no line and tear none", async () => {
   expect(r.chain).toEqual({ ok: true }); expect(r.lines.map((l) => l.seq)).toEqual(range(1, 400));
   expect(r.lines.filter((l) => l.by === "agent-one")).toHaveLength(200);
 }, 120_000);
+
+test("a stale lock raced by many appenders in two processes loses no line and tears none", async () => {
+  const TRIALS = 150;
+  const homes: string[] = [];
+  const old = new Date(Date.now() - 60_000);
+  for (let i = 0; i < TRIALS; i++) {
+    const h = await tempHome();
+    await mkdir(join(h, "lock"));
+    await utimes(join(h, "lock"), old, old);
+    homes.push(h);
+  }
+  const list = join(await tempHome({ init: false }), "homes.json");
+  await writeFile(list, JSON.stringify(homes));
+  const start = String(Date.now() + 1500);                         // both processes are up by then, and start each home at once
+  const counts = await Promise.all(["agent-one", "agent-two"].map(async (n) =>
+    JSON.parse(await run(process.execPath, ["--import", "tsx", "test/fixtures/racer.ts", list, start, "8", "6", n])) as number[]));
+
+  const bad: string[] = [];
+  for (const [i, h] of homes.entries()) {
+    const ok = counts[0]![i]! + counts[1]![i]!;
+    const r = await readLog<RecallLine>(h, "recalls.jsonl");
+    const text = await readFile(join(h, "recalls.jsonl"), "utf8");
+    if (r.lines.length !== ok || r.skipped !== 0 || r.partial || !r.chain.ok || text.split("\n").length - 1 !== ok) {
+      bad.push(`trial ${i}: ${ok} appends reported success, ${r.lines.length} lines, ${r.skipped} torn, chain ${JSON.stringify(r.chain)}`);
+    }
+  }
+  expect(bad).toEqual([]);
+}, 60_000);
+
+test("release leaves a lock that another holder has taken since", async () => {
+  const lock = join(home, "lock");
+  await withLock(home, async () => {
+    await rm(lock, { recursive: true, force: true });              // broken meanwhile by a waiter, who took it
+    await mkdir(lock);
+    await writeFile(join(lock, "token"), "another holder");
+  });
+  expect(await readFile(join(lock, "token"), "utf8")).toBe("another holder");
+});
+
+test("a stale lock.break is broken too, and a fresh one is waited on", async () => {
+  const lock = join(home, "lock");
+  const breaker = join(home, "lock.break");
+  const old = new Date(Date.now() - 60_000);
+  await mkdir(lock);
+  await mkdir(breaker);
+  await utimes(lock, old, old);
+  await utimes(breaker, old, old);
+  const a = await appendLine<RecallLine>(home, "recalls.jsonl", "agent-one", c.now(), "r", recall);
+  expect(a.seq).toBe(1);
+  await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(breaker)).rejects.toMatchObject({ code: "ENOENT" });
+
+  await mkdir(lock);
+  await mkdir(breaker);                                           // a breaker at work: the stale lock is not broken by a second
+  await utimes(lock, old, old);
+  await expect(withLock(home, async () => undefined, { waitMs: 200 })).rejects.toMatchObject({ code: "E_LOCKED" });
+});

@@ -56,47 +56,61 @@ export async function resealLog(home: string, file: LogFile, nowMs: number): Pro
 
 /**
  * Inside the lock: reads the file, asks build for the fields given its complete lines (null appends nothing and
- * changes nothing), cuts a partial last line, and writes the new line and its newline in one write, then fsync.
+ * changes nothing), cuts a partial last line, then appends the new line and its newline in one write, then fsync.
+ * The file is opened for append, never written at an offset: two writers who both believed they held the lock would
+ * leave two whole lines and a chain break that verify shows, never one line over another.
  */
 async function appendWith<L extends LineBase>(home: string, file: LogFile, by: string, nowMs: number, prefix: IdPrefix,
   build: (complete: Buffer, raws: Raw[]) => Built | null): Promise<L | null> {
   await assertHome(home);
+  const path = join(home, file);
   return withLock(home, async () => {
-    const handle = await open(join(home, file), "r+");
+    const buf = await readFile(path);
+    const { raws, cut } = split(buf);
+    const fields = build(buf.subarray(0, cut), raws);
+    if (!fields) return null;
+
+    const last = raws.at(-1);
+    const obj: Record<string, unknown> = {
+      v: 1, kind: fields.kind, id: newId(prefix, nowMs), seq: nextSeq(raws),
+      prev: last ? sha256Hex(last.text) : null, t: new Date(nowMs).toISOString(), by,
+    };
+    for (const [key, value] of Object.entries(fields)) {
+      if (key === "kind") continue;
+      if (BASE_KEYS.has(key)) throw new MemoryError("E_INPUT", `${key} is written by the log itself, not given`);
+      obj[key] = value;
+    }
+    const text0 = JSON.stringify(obj);
+    const sum = sha256Hex(text0);
+    const text = `${text0.slice(0, -1)},"sum":"${sum}"}`;
+    const size = Buffer.byteLength(text);
+    if (size > LINE_MAX_BYTES) {
+      throw new MemoryError("E_INPUT", `the line would be ${size} bytes: a line holds at most ${LINE_MAX_BYTES} bytes`);
+    }
+
+    if (cut < buf.length) await truncateTo(path, cut);
+    const out = Buffer.from(`${text}\n`);
+    const handle = await open(path, "a");
     try {
-      const buf = await handle.readFile();
-      const { raws, cut } = split(buf);
-      const fields = build(buf.subarray(0, cut), raws);
-      if (!fields) return null;
-
-      const last = raws.at(-1);
-      const obj: Record<string, unknown> = {
-        v: 1, kind: fields.kind, id: newId(prefix, nowMs), seq: nextSeq(raws),
-        prev: last ? sha256Hex(last.text) : null, t: new Date(nowMs).toISOString(), by,
-      };
-      for (const [key, value] of Object.entries(fields)) {
-        if (key === "kind") continue;
-        if (BASE_KEYS.has(key)) throw new MemoryError("E_INPUT", `${key} is written by the log itself, not given`);
-        obj[key] = value;
-      }
-      const text0 = JSON.stringify(obj);
-      const sum = sha256Hex(text0);
-      const text = `${text0.slice(0, -1)},"sum":"${sum}"}`;
-      const size = Buffer.byteLength(text);
-      if (size > LINE_MAX_BYTES) {
-        throw new MemoryError("E_INPUT", `the line would be ${size} bytes: a line holds at most ${LINE_MAX_BYTES} bytes`);
-      }
-
-      if (cut < buf.length) await handle.truncate(cut);
-      const out = Buffer.from(`${text}\n`);
-      const { bytesWritten } = await handle.write(out, 0, out.length, cut);
+      const { bytesWritten } = await handle.write(out, 0, out.length);
       if (bytesWritten !== out.length) throw new Error(`${file}: wrote ${bytesWritten} of ${out.length} bytes`);
       await handle.sync();
-      return JSON.parse(text) as L;
     } finally {
       await handle.close();
     }
+    return JSON.parse(text) as L;
   });
+}
+
+/** Cuts the file to its first `size` bytes. */
+async function truncateTo(path: string, size: number): Promise<void> {
+  const handle = await open(path, "r+");
+  try {
+    await handle.truncate(size);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 /** The complete lines of a file; a last line without its newline is partial and left out. */
