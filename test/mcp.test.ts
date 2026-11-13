@@ -95,6 +95,30 @@ test("each listed tool says when to call it and shows its fields", async () => {
   expect(Object.keys(review.inputSchema.properties ?? {})).toEqual(["since"]);
 });
 
+test("every tool publishes a flat object schema, every field described", async () => {
+  const tools = (await one.listTools()).tools;
+  expect(tools).toHaveLength(7);
+  for (const t of tools) {
+    const schema = t.inputSchema as Record<string, unknown>;
+    expect(schema.type, t.name).toBe("object");
+    for (const key of ["oneOf", "anyOf", "allOf"]) expect(schema, `${t.name} ${key}`).not.toHaveProperty(key);
+    const properties = (schema.properties ?? {}) as Record<string, { description?: unknown }>;
+    for (const [field, p] of Object.entries(properties)) {
+      expect(typeof p.description === "string" && p.description.length > 0, `${t.name}.${field}`).toBe(true);
+    }
+  }
+  const amend = tools.find((t) => t.name === "memory_amend")!.inputSchema as Record<string, any>;
+  expect(amend.required).toEqual(["decision", "what"]);
+  expect(amend.properties.what.enum).toEqual(["ref", "close", "review", "correction", "void"]);
+  for (const field of ["ref", "closed_at", "price", "note", "thesis_held", "wrong_if_hit", "whose", "field", "value", "reason"]) {
+    expect(amend.properties, field).toHaveProperty(field);
+    expect(amend.properties[field].description, field).toMatch(/what/);
+  }
+  const r = await answer(one, "memory_amend", { decision: "d-20260302-0f3a9c21", what: "ref" });
+  expect(r.isError).toBe(true);                                   // the core's strict parse stays the judge
+  expect(textOf(r)).toContain("ref is required");
+});
+
 test("the instructions fit and are served", async () => {
   expect(Buffer.byteLength(INSTRUCTIONS)).toBeLessThanOrEqual(INSTRUCTIONS_MAX_BYTES);
   expect(INSTRUCTIONS_MAX_BYTES).toBe(1500);

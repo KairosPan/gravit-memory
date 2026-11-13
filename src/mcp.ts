@@ -2,7 +2,8 @@
 // a lesson
 //
 // The core parses every input strictly and names the field it refuses, so the tools hand the arguments through
-// untouched: each tool publishes its input's JSON schema, but parses nothing itself (see `door`). A refusal is an
+// untouched: each tool publishes its input's JSON schema, flat (an object, never a top-level oneOf, which hosts that
+// pass schemas to a model refuse) and with every field described, but parses nothing itself (see `door`). A refusal is an
 // answer (isError, the core's sentence), never a protocol error. Only memory_reconcile reaches the network, through
 // the Memory's own fetch.
 import type { Readable, Writable } from "node:stream";
@@ -39,16 +40,96 @@ const reviewInput = z.strictObject({
   since: z.string({ error: "must be an ISO date or time, such as 2026-03-02 or 2026-03-02T15:00:00Z" }).optional(),
 });
 
+type Json = Record<string, unknown>;
+
+/** What each field of every tool is, as the listed schemas say it. */
+const FIELDS: Record<string, string> = {
+  considering: "The actions that might be taken, 1 to 3 of buy, add, trim, sell, short, cover, hold, pass: not your leaning.",
+  symbol: "The instrument's symbol as the price source names it, such as NVDA or 600519; given with market.",
+  market: "The market the symbol trades in, as config.json names it, such as US; given with symbol.",
+  facts: "The facts you have, by name (lower-case letters, digits, underscores): a number, a short string or a boolean each.",
+  fact_sources: "Where each fact came from, by the fact's name: only facts given in facts.",
+  tags: "Up to 12 lower-case key:value tags with no spaces, such as theme:ai.",
+  note: "A note of yours, at most 500 characters.",
+  action: "What was decided: buy, add, trim, sell, short, cover, hold or pass.",
+  whose: "Whose decision it is: owner (the owner decided) or agent (a call of your own).",
+  thesis: "Why, as it was given, 1 to 1000 characters.",
+  wrong_if: "What would show the decision wrong, as the owner said it; leave it out rather than guess.",
+  horizon: "Trading days after which the thesis should be reviewed, 1 to 250.",
+  words: "The owner's own words, only when whose is owner.",
+  decided_at: "When it was decided, an ISO time, when earlier than now; more than a day back marks it backfilled.",
+  price: "The price taken or seen, above 0.",
+  price_source: "Where the price came from.",
+  size: "How much, in words or numbers, at most 80 characters.",
+  evidence: "Up to 10 items of at most 500 characters each.",
+  recall: "The recall_id of the memory_recall made before this decision.",
+  since: "An ISO date or time: the review covers what is new since then; everything when left out.",
+  what: "What is proposed: new (a lesson), change (to a card there is) or retire (a card there is).",
+  lesson: "The lesson's id: lower-case letters, digits and dashes, 2 to 40.",
+  card: "The proposed card's fields (id, says, actions, strength, scope, check, facts, source, words); not given when what is retire.",
+  reason: "Why, 1 to 500 characters.",
+};
+
+/** What each field of memory_amend is, and which `what` it goes with. */
+const AMEND_FIELDS: Record<string, string> = {
+  decision: "The id of the decision amended, such as d-20260302-0f3a9c21.",
+  what: "The kind of amendment: ref, close, review, correction or void; it decides which other fields are given.",
+  ref: "With what ref, required: the reference, such as an order number, at most 500 characters.",
+  closed_at: "With what close, required: when the position was closed, an ISO time.",
+  price: "With what close, optional: the closing price, above 0.",
+  note: "With what close, review or correction, optional: a note, at most 500 characters.",
+  thesis_held: "With what review, required: whether the thesis held: yes, no or unclear.",
+  wrong_if_hit: "With what review, required: whether the wrong_if condition came true: yes, no or unclear.",
+  whose: "With what review, required: whose review it is, owner or agent.",
+  field: "With what correction, required: the decision's field the correction is about.",
+  value: "With what correction, required: the corrected value, as a note; nothing computed reads it.",
+  reason: "With what void, required: why your own line is void, 1 to 500 characters.",
+};
+
 /**
- * A tool's input as the SDK sees it: an object that lets every argument through to the core, which refuses by
- * name, while the listed tool publishes the strict schema's JSON (merged in as the schema's metadata).
+ * A strict schema's JSON as one flat object: a top-level union (memory_amend's) becomes one object whose
+ * discriminating field is an enum of its values, the other fields optional and required only where every branch
+ * requires them. Every field takes its description from `descriptions`; one with none is a bug, found at boot.
  */
-function door(schema: z.ZodType): z.ZodObject {
-  const { $schema: _, ...json } = z.toJSONSchema(schema, { io: "input", target: "draft-7" }) as Record<string, unknown>;
-  return z.looseObject({}).meta(json);
+function flatSchema(schema: z.ZodType, descriptions: Record<string, string>): Json {
+  const { $schema: _, ...json } = z.toJSONSchema(schema, { io: "input", target: "draft-7" }) as Json;
+  let flat: Json = json;
+  const branches = (json.oneOf ?? json.anyOf) as Json[] | undefined;
+  if (branches !== undefined) {
+    const properties: Record<string, Json> = {};
+    let required: string[] | undefined;
+    for (const branch of branches) {
+      for (const [key, value] of Object.entries(branch.properties as Record<string, Json>)) {
+        if ("const" in value) {
+          const enumOf = (properties[key]?.enum as unknown[] | undefined) ?? [];
+          properties[key] = { type: "string", enum: [...enumOf, value.const] };
+        } else {
+          properties[key] ??= value;
+        }
+      }
+      const own = (branch.required as string[] | undefined) ?? [];
+      required = required === undefined ? own : required.filter((k) => own.includes(k));
+    }
+    flat = { type: "object", properties, required: required ?? [], additionalProperties: false };
+  }
+  const properties = (flat.properties ?? {}) as Record<string, Json>;
+  for (const key of Object.keys(properties)) {
+    const description = descriptions[key];
+    if (description === undefined) throw new Error(`gravit-memory: the field ${key} has no description`);
+    properties[key] = { ...properties[key], description };
+  }
+  return { ...flat, type: "object", properties };
 }
 
-type Structured = Record<string, unknown>;
+/**
+ * A tool's input as the SDK sees it: an object that lets every argument through to the core, which refuses by
+ * name, while the listed tool publishes the flat schema (merged in as the schema's metadata).
+ */
+function door(schema: z.ZodType, descriptions: Record<string, string> = FIELDS): z.ZodObject {
+  return z.looseObject({}).meta(flatSchema(schema, descriptions));
+}
+
+type Structured = Json;
 type Handler = (args: Record<string, unknown>) => Promise<{ structured: Structured; text: string }>;
 
 /** The server an agent named `as` connects to; it never touches the process's arguments or stdio. */
@@ -59,7 +140,8 @@ export function buildServer(memory: Memory, as: string): McpServer {
   const server = new McpServer({ name: "gravit-memory", version: VERSION }, { instructions: INSTRUCTIONS });
 
   const tool = (name: (typeof TOOL_NAMES)[number], description: string, schema: z.ZodType, handler: Handler): void => {
-    server.registerTool(name, { description, inputSchema: door(schema) }, async (args): Promise<CallToolResult> => {
+    const inputSchema = door(schema, name === "memory_amend" ? AMEND_FIELDS : FIELDS);
+    server.registerTool(name, { description, inputSchema }, async (args): Promise<CallToolResult> => {
       try {
         const { structured, text } = await handler(args as Record<string, unknown>);
         return { content: [{ type: "text", text }], structuredContent: structured };
