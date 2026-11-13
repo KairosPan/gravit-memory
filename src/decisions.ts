@@ -31,8 +31,11 @@ export async function recordDecision(home: string, by: string, input: unknown, n
   }
   if (data.recall !== undefined) {
     const recalls = await readLog<RecallLine>(home, "recalls.jsonl");
-    if (!recalls.lines.some((l) => l.kind === "recall" && l.id === data.recall)) {
-      throw new MemoryError("E_NOT_FOUND", `recall ${data.recall} is not in the memory.`);
+    const asked = recalls.lines.find((l) => l.kind === "recall" && l.id === data.recall);
+    if (asked === undefined) throw new MemoryError("E_NOT_FOUND", `recall ${data.recall} is not in the memory.`);
+    if (asked.symbol !== undefined && data.symbol !== undefined && asked.symbol !== data.symbol) {
+      throw new MemoryError("E_INPUT", `recall ${data.recall} was asked on another symbol than this decision's: `
+        + "name the recall made on its own symbol.");
     }
   }
 

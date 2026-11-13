@@ -56,7 +56,7 @@ export async function resealLog(home: string, file: LogFile, nowMs: number): Pro
 
 /**
  * Inside the lock: reads the file, asks build for the fields given its complete lines (null appends nothing and
- * changes nothing), cuts a partial last line, then appends the new line and its newline in one write, then fsync.
+ * changes nothing), cuts a partial last line (or gives a whole one its newline), then appends the new line and its newline in one write, then fsync.
  * The file is opened for append, never written at an offset: two writers who both believed they held the lock would
  * leave two whole lines and a chain break that verify shows, never one line over another.
  */
@@ -67,7 +67,13 @@ async function appendWith<L extends LineBase>(home: string, file: LogFile, by: s
   return withLock(home, async () => {
     const buf = await readFile(path);
     const { raws, cut } = split(buf);
-    const fields = build(buf.subarray(0, cut), raws);
+    // A last line that lacks only its newline is a whole line: it is completed, not cut. Any other tail is cut.
+    const tail = buf.toString("utf8", cut);
+    const whole = cut < buf.length ? parse(tail) : null;
+    const complete = whole !== null && sumHolds(tail, whole.sum);
+    if (complete) raws.push({ text: tail, start: cut, line: whole });
+    const before = complete ? Buffer.concat([buf, Buffer.from("\n")]) : buf.subarray(0, cut);
+    const fields = build(before, raws);
     if (!fields) return null;
 
     const last = raws.at(-1);
@@ -88,8 +94,8 @@ async function appendWith<L extends LineBase>(home: string, file: LogFile, by: s
       throw new MemoryError("E_INPUT", `the line would be ${size} bytes: a line holds at most ${LINE_MAX_BYTES} bytes`);
     }
 
-    if (cut < buf.length) await truncateTo(path, cut);
-    const out = Buffer.from(`${text}\n`);
+    if (cut < buf.length && !complete) await truncateTo(path, cut);
+    const out = Buffer.from(`${complete ? "\n" : ""}${text}\n`);
     const handle = await open(path, "a");
     try {
       const { bytesWritten } = await handle.write(out, 0, out.length);

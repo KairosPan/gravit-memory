@@ -16,7 +16,7 @@ npm run build        # tsc to dist/; prepare runs it, so the package installs fr
 - No model call anywhere. No network call outside `src/prices.ts`, and that one only toward `config.json`'s
   `prices.url`, with the fetch it is given.
 - Every `.jsonl` file of the home is only appended to, through `src/log.ts`. Nothing rewrites or removes a line, but
-  cutting a partial last line.
+  cutting a partial last line (a whole last line that lacks only its newline is given one).
 - No agent-facing function arms, retires or edits a card. The owner's acts live in `Memory.owner` and the command
   line, nowhere else; the MCP server has no tool for them, and an agent may not write as `owner`.
 - The home is never inside a git work tree, and the tests use temporary homes under the system's temporary
@@ -24,7 +24,8 @@ npm run build        # tsc to dist/; prepare runs it, so the package installs fr
 - macOS, Windows and Linux: no shell-outs, `node:path` for every path, file modes only where `process.platform` is
   not `win32`.
 - The repository is public. It holds no path of anyone's machine, no name of a person, no real decision and no
-  lesson of anyone's; the only lesson text is the stand-in card in `test/helpers.ts`. Never commit a home.
+  lesson of anyone's; the only lesson texts are stand-ins in `test/`; none is anyone's real lesson. Never commit a
+  home.
   `test/package.test.ts` checks every file git lists.
 - Characters in a limit are code points; bytes are UTF-8. Every limit is in `src/limits.ts`.
 

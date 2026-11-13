@@ -17,7 +17,7 @@
 // the terminal would have wrapped it. An owner's act refuses a terminal too narrow to show the fence and some text.
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Readable } from "node:stream";
 import { Writable } from "node:stream";
@@ -282,6 +282,7 @@ async function arm(io: Door, memory: Memory, lesson: string): Promise<number> {
   if (!(await confirm(io, `arm ${lesson} (${cardWords(card)}, sha ${shownSha.slice(0, 12)})`))) return 1;
   const { sha256 } = await memory.owner.arm(lesson, shownSha);
   io.out(`Armed lesson ${lesson} (${sha256.slice(0, 12)}).`);
+  await ownerChainNote(io, memory);
   return 0;
 }
 
@@ -321,13 +322,22 @@ async function voidDecision(io: Door, memory: Memory, decision: string, reason: 
 }
 
 async function reseal(io: Door, memory: Memory): Promise<number> {
-  const broken = (await memory.status()).chains.filter((ch) => !ch.ok);
+  const status = await memory.status();
+  const broken = status.chains.filter((ch) => !ch.ok);
   if (broken.length === 0) {
     io.out("Every chain holds: there is nothing to reseal.");
     return 0;
   }
-  io.out("These chains are broken:");
-  for (const ch of broken) io.out(`  ${ch.file}: broke at line ${ch.line ?? "?"}`);
+  io.out("These chains are broken, each where it breaks:");
+  for (const ch of broken) {
+    const text = (await readText(join(memory.home, ch.file))) ?? "";
+    io.out(`  ${ch.file}: broke at line ${ch.line ?? "?"}:`);
+    io.out(fence(ch.line !== undefined ? text.split("\n")[ch.line - 1] ?? "" : ""));
+  }
+  if (broken.some((ch) => ch.file === "owner.jsonl")) {
+    const after = status.cards.filter((c) => (c.state === "armed" || c.state === "changed") && c.card).map((c) => ident(c.id, LESSON_ID));
+    io.out(after.length === 0 ? "After the reseal no lesson applies." : `After the reseal these lessons apply: ${after.join(", ")}`);
+  }
   io.out("Resealing writes a reseal line at the end of each, naming where it broke and the hash of what is before it;");
   io.out("its chain is verified from there on. No line is changed or removed.");
   if (!(await confirm(io, `reseal ${broken.map((ch) => ch.file).join(", ")}`))) return 1;
@@ -363,6 +373,7 @@ async function review(io: Door, memory: Memory): Promise<number> {
         if (!(await confirm(io, `${act} from proposal ${pid}`))) return;
         await memory.owner.accept(p.id);
         io.out(p.what === "retire" ? `Accepted: lesson ${lesson} is retired.` : `Accepted: lesson ${lesson} is armed.`);
+        await ownerChainNote(io, memory);
       } else if (choice === "edit") {
         const { path } = await memory.owner.edit(p.id);
         io.out(`Lesson ${lesson} is written, unarmed, at ${lesson === "?" ? "?" : path}: edit it, then run gravit-memory arm ${lesson}.`);
@@ -393,6 +404,7 @@ async function review(io: Door, memory: Memory): Promise<number> {
         if (!(await confirm(io, `arm ${id} (${cardWords(parseCard(bytes, s.id))}, sha ${shownSha.slice(0, 12)})`))) return;
         const { sha256 } = await memory.owner.arm(s.id, shownSha);
         io.out(`Armed lesson ${id} as its file is now (${sha256.slice(0, 12)}).`);
+        await ownerChainNote(io, memory);
       } else if (choice === "discard") {
         if (!(await confirm(io, `discard the edit of ${id}`))) return;
         await memory.owner.discard(s.id);
@@ -483,6 +495,13 @@ async function cardOf(memory: Memory, lesson: string): Promise<CardState> {
   const state = (await memory.status()).cards.find((c) => c.id === lesson);
   if (!state) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
   return state;
+}
+
+/** After an act that arms: while owner.jsonl's chain is broken no lesson applies, armed or not; says so. */
+async function ownerChainNote(io: Door, memory: Memory): Promise<void> {
+  if ((await memory.status()).chains.some((ch) => ch.file === "owner.jsonl" && !ch.ok)) {
+    io.out("owner.jsonl's chain is broken: no lesson applies until gravit-memory reseal.");
+  }
 }
 
 /** When a card was armed, as an ISO time, or "an earlier day". */

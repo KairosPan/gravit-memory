@@ -698,3 +698,28 @@ test("a terminal resized between two questions is wrapped at its new width", asy
   expect(Math.max(...text.slice(0, text.indexOf("lesson-s")).split("\n").map((l) => l.length))).toBe(120);
   expect(Math.max(...second.split("\n").map((l) => l.length))).toBeLessThanOrEqual(50);
 });
+
+test("arm on a broken owner's chain says nothing applies until reseal; reseal shows the line and what will apply", async () => {
+  await writeCard(home);
+  await memory.owner.arm(ID);
+  await writeCard(home, STAND_IN_CARD.replace(`id: ${ID}`, "id: second-look"));
+  await tamper("owner.jsonl", `"lesson":"${ID}"`, `"lesson":"${ID}" `);
+  const io = fakeIo({ isTTY: true, answers: ["yes"] });
+  expect(await runCli(["arm", "second-look", "--home", home], io)).toBe(0);
+  expect(io.printed()).toMatch(/Armed lesson second-look[^\n]*\nowner\.jsonl's chain is broken: no lesson applies until gravit-memory reseal\./);
+
+  const p = await memory.propose("agent-one", { what: "new", lesson: "lesson-n", card: card("lesson-n"), reason: "Seen." });
+  const rv = fakeIo({ isTTY: true, answers: ["accept", "yes"] });
+  expect(await runCli(["review", "--home", home], rv)).toBe(0);
+  expect(rv.printed()).toContain("Accepted: lesson lesson-n is armed.\nowner.jsonl's chain is broken: no lesson applies until gravit-memory reseal.");
+  expect(p.id).toMatch(/^p-/);
+
+  const rs = fakeIo({ isTTY: true, answers: ["yes"] });
+  expect(await runCli(["reseal", "--home", home], rs)).toBe(0);
+  const shown = rs.asked[0]!;
+  expect(shown).toContain("owner.jsonl: broke at line 1:");
+  expect(shown).toContain(`  | {"v":1,"kind":"owner"`);
+  expect(shown).toContain(`"lesson":"${ID}" ,`);
+  expect(shown).toContain(`After the reseal these lessons apply: lesson-n, ${ID}, second-look`);
+  expect((await cardStates(home)).applying.map((x) => x.id).sort()).toEqual(["lesson-n", ID, "second-look"].sort());
+});

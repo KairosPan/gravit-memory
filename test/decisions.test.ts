@@ -231,3 +231,25 @@ test("reviewed", async () => {
     c.now());
   expect((await viewOf(d.id)).reviewed).toBe(true);
 });
+
+test("a symbol and a market are codes of their own characters", async () => {
+  for (const symbol of ["NVDA", "BRK.B", "600519", "sh600000", "ES=F", "BF-B", "X_Y^Z", "A".repeat(32)]) {
+    expect((await record({ ...base, symbol })).symbol, symbol).toBe(symbol);
+  }
+  for (const symbol of ["^GSPC", ".X", "-X", "A B", "A/B", "A".repeat(33), "NVDA\n", "涨"]) {
+    expect(await fails(record({ ...base, symbol }), "E_INPUT"), JSON.stringify(symbol)).toContain("symbol");
+  }
+  for (const market of ["US", "CN", "us_otc", "hk-main"]) expect((await record({ ...base, market })).market).toBe(market);
+  for (const market of ["U S", "U.S", "", "M".repeat(33)]) {
+    expect(await fails(record({ ...base, market }), "E_INPUT"), JSON.stringify(market)).toContain("market");
+  }
+});
+
+test("a decision naming a recall on another symbol is refused", async () => {
+  const r = await appendLine<RecallLine>(home, "recalls.jsonl", "agent-one", c.now(), "r",
+    { kind: "recall", considering: ["buy"], symbol: "NVDA", market: "US", applied: [], untold: [] });
+  expect(await fails(record({ ...base, symbol: "AMD", recall: r.id }), "E_INPUT")).toContain("recall");
+  expect((await record({ ...base, recall: r.id })).recall).toBe(r.id);
+  const { symbol: _s, market: _m, ...unnamed } = base;
+  expect((await record({ ...unnamed, recall: r.id })).recall).toBe(r.id);              // no symbol on one side: no check
+});

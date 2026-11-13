@@ -25,23 +25,30 @@ npm install -g github:KairosPan/gravit-memory
 gravit-memory init
 ```
 
+Once the repository has a tag or a commit you want to stay on, pin it: `npm install -g
+github:KairosPan/gravit-memory#<ref>`. Installing again is how you move to another version.
+
 `gravit-memory init` makes the home, `~/.gravit-memory` unless `GRAVIT_MEMORY_HOME` names another directory, and
 says where it is. It refuses a directory inside a git work tree (the memory never lives in a repository) and a
 directory that already holds something else. Every command takes `--home <path>` in place of the variable.
 
 ## Connecting an agent
 
-Give the agent one MCP server, started with this line:
+Install the package once (above), then give the agent one MCP server that runs the installed command:
 
 ```bash
-npx -y github:KairosPan/gravit-memory mcp --as <name>
+gravit-memory mcp --as <name>
 ```
 
 In a client that takes JSON, that is:
 
 ```json
-{ "mcpServers": { "gravit-memory": { "command": "npx", "args": ["-y", "github:KairosPan/gravit-memory", "mcp", "--as", "research"] } } }
+{ "mcpServers": { "gravit-memory": { "command": "gravit-memory", "args": ["mcp", "--as", "research"] } } }
 ```
+
+Without installing, `npx -y github:KairosPan/gravit-memory#<ref> mcp --as <name>` runs the same door, pinned to a tag
+or a commit. It costs the network at every start of the agent, and the first run builds the package; on Windows the
+command is `npx.cmd` (or `cmd /c npx`).
 
 `--as` is the agent's name, 2 to 32 lower-case letters, digits or dashes, and never `owner`. Every line the agent
 writes carries it, so that a decision, a recall or a proposal says which agent wrote it. Give each agent its own name.
@@ -127,7 +134,9 @@ gravit-memory arm no-chasing-after-a-run
 ```
 
 The command shows the file as it is now, asks you to type `yes`, and arms exactly the bytes it showed: a copy is
-kept under `armed/`, and a line in `owner.jsonl` names its SHA-256. If the file is edited afterwards, the card goes on
+kept under `armed/`, and a line in `owner.jsonl` names its SHA-256. The bytes armed are the file as shown, trailing
+whitespace included, though trailing whitespace is not displayed. A host that draws its own door for the owner passes
+the SHA-256 of what it showed as `expect` to `Memory.owner.arm`, so that a file changed meanwhile is not armed. If the file is edited afterwards, the card goes on
 applying as it was armed until you arm it again or discard the edit.
 
 An agent never writes a lesson. It proposes one with `memory_propose`, and you answer it in `gravit-memory review`.
@@ -218,7 +227,9 @@ a line that looks like the owner's. The command line keeps the owner's acts to a
 Each line of each ledger carries the hash of the line before it and the hash of its own text, so `gravit-memory
 verify` shows a line that was edited, unless every hash from that line on was recomputed. It does not see lines cut
 from the end of a file unless another line points at what was cut. A broken chain stays broken until the owner reseals it; while
-`owner.jsonl`'s chain is broken, no lesson applies.
+`owner.jsonl`'s chain is broken, no lesson applies. The owner's acts still work then (an arm or an accept is
+written), and the command says that nothing applies until `gravit-memory reseal`, which shows the line where each
+file broke and, for `owner.jsonl`, the lessons that will apply after it.
 
 An agent's name is a name, not a proof: any process can start the server under any name but `owner`.
 

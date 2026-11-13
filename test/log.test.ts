@@ -226,3 +226,19 @@ test("a stale lock.break is broken too, and a fresh one is waited on", async () 
   await utimes(lock, old, old);
   await expect(withLock(home, async () => undefined, { waitMs: 200 })).rejects.toMatchObject({ code: "E_LOCKED" });
 });
+
+test("a whole last line without its newline is completed, not cut", async () => {
+  await appendFive();
+  const path = join(home, "recalls.jsonl");
+  const text = await readFile(path, "utf8");
+  await writeFile(path, text.slice(0, -1));                        // the fifth line lost its newline
+  const sixth = await appendLine<RecallLine>(home, "recalls.jsonl", "agent-one", c.now(), "r", recall);
+  expect(sixth.seq).toBe(6);
+  const after = await readFile(path, "utf8");
+  expect(after.startsWith(text)).toBe(true);                       // the fifth line whole again, its newline back
+  expect(after.slice(text.length).split("\n")).toHaveLength(2);    // then the sixth and its newline
+  const r = await readLog<RecallLine>(home, "recalls.jsonl");
+  expect(r.chain).toEqual({ ok: true });
+  expect(r.lines).toHaveLength(6);
+  expect(r.partial).toBe(false);
+});

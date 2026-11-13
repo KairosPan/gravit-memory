@@ -24,7 +24,9 @@ const action = z.enum(ACTIONS);
 const whose = z.enum(["owner", "agent"]);
 const tri = z.enum(["yes", "no", "unclear"]);
 const isoTime = z.iso.datetime({ offset: true, error: "must be an ISO time, such as 2026-03-02T15:00:00Z" });
-const code = z.string().regex(/^\S{1,32}$/, "must be 1 to 32 characters with no spaces");
+const symbol = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._^=-]{0,31}$/,
+  "must be 1 to 32 letters, digits or . _ ^ = -, beginning with a letter or a digit");
+const market = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/, "must be 1 to 32 letters, digits, underscores or dashes");
 const factName = z.string().regex(FACT_NAME, "must be lower-case letters, digits or underscores, at most 40");
 const scalar = z.union([z.number(), z.string(), z.boolean()], { error: "must be a number, a string or a boolean" });
 const factValue = z.union([z.number(), chars(FACT_SOURCE_MAX, 0), z.boolean()],
@@ -51,8 +53,8 @@ export const decisionInput = z.strictObject({
   action,
   whose,
   thesis: chars(THESIS_MAX),
-  symbol: code.optional(),
-  market: code.optional(),
+  symbol: symbol.optional(),
+  market: market.optional(),
   wrong_if: chars(WRONG_IF_MAX).optional(),
   horizon: z.number().int("must be a whole number")
     .min(HORIZON_MIN, `must be ${HORIZON_MIN} to ${HORIZON_MAX}`).max(HORIZON_MAX, `must be ${HORIZON_MIN} to ${HORIZON_MAX}`)
@@ -95,8 +97,8 @@ export const amendInput = z.discriminatedUnion("what", [
 export const recallInput = z.strictObject({
   considering: z.array(action).min(1, "names 1 to 3 actions").max(3, "names 1 to 3 actions")
     .refine(distinct, "names each action once"),
-  symbol: code.optional(),
-  market: code.optional(),
+  symbol: symbol.optional(),
+  market: market.optional(),
   facts: facts.optional(),
   fact_sources: factSources.optional(),
   tags: tags.optional(),

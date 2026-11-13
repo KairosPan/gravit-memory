@@ -75,3 +75,15 @@ test("package.json ships the built door", async () => {
   expect(pkg.bin?.["gravit-memory"]).toBe("dist/cli.js");
   expect(pkg.files).toContain("dist");
 });
+
+test("line endings are LF on every platform", async () => {
+  expect((await readIfThere(".gitattributes"))?.split("\n")).toContain("* text=auto eol=lf");
+});
+
+test("the README connects an agent through the installed command, and pins the npx form", async () => {
+  const readme = await readFile(join(ROOT, "README.md"), "utf8");
+  expect(readme).toContain("npm install -g github:KairosPan/gravit-memory");
+  expect(readme).toContain("gravit-memory mcp --as <name>");
+  expect(readme).toContain('"command": "gravit-memory"');
+  for (const npx of readme.match(/npx[^\n`]*github:KairosPan\/gravit-memory[^\s"`]*/g) ?? []) expect(npx, npx).toContain("#<ref>");
+});

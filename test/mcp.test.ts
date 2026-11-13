@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -316,4 +316,39 @@ test("memory_status gives an agent the words of the applying cards alone, as arm
   await writeFile(owner, (await readFile(owner, "utf8")).replace("card-armed", "card-armex"));
   const after = await call(one, "memory_status");
   expect(JSON.stringify(after)).not.toContain("Stand-in words");
+});
+
+test("a fault inside is one line on the server's stderr, and the fixed sentence to the agent", async () => {
+  const faults: unknown[] = [];
+  const server = buildServer({ ...memory, status: async () => { throw new Error("a bug"); } }, "agent-one", { onFault: (e) => faults.push(e) });
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await server.connect(serverSide);
+  await client.connect(clientSide);
+  closers.push(async () => { await client.close(); await server.close(); });
+  const r = await answer(client, "memory_status");
+  expect(r.isError).toBe(true);
+  expect(textOf(r)).toBe("gravit-memory failed inside and gave no answer; the call may be tried again.");
+  expect(faults).toHaveLength(1);
+  expect(await answer(client, "memory_record", {})).toMatchObject({ isError: true });         // a refusal is no fault
+  expect(faults).toHaveLength(1);
+
+  await rm(join(home, "recalls.jsonl"));
+  await mkdir(join(home, "recalls.jsonl"));                                         // a fault runMcp meets for real
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  let out = "";
+  let err = "";
+  stdout.on("data", (b: Buffer) => { out += b.toString(); });
+  stderr.on("data", (b: Buffer) => { err += b.toString(); });
+  const run = runMcp(["--as", "agent-one", "--home", home], { stdin, stdout, stderr, now: c.now, fetch: counting });
+  stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } })}\n`);
+  stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+  stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "memory_status", arguments: {} } })}\n`);
+  for (let waited = 0; out.split("\n").length < 3 && waited < 5000; waited += 10) await new Promise((done) => setTimeout(done, 10));
+  stdin.end();
+  expect(await run).toBe(0);
+  expect(err.split("\n").filter((l) => l !== "")).toEqual([expect.stringMatching(/^gravit-memory mcp: a fault inside memory_status: /)]);
 });

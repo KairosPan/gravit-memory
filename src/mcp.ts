@@ -132,8 +132,11 @@ function door(schema: z.ZodType, descriptions: Record<string, string> = FIELDS):
 type Structured = Json;
 type Handler = (args: Record<string, unknown>) => Promise<{ structured: Structured; text: string }>;
 
-/** The server an agent named `as` connects to; it never touches the process's arguments or stdio. */
-export function buildServer(memory: Memory, as: string): McpServer {
+/**
+ * The server an agent named `as` connects to; it never touches the process's arguments or stdio. A fault inside (an
+ * error that is not a MemoryError) is answered with a fixed sentence, and handed to `onFault` for the host's log.
+ */
+export function buildServer(memory: Memory, as: string, opts?: { onFault?: (err: unknown, tool: string) => void }): McpServer {
   if (as === "owner" || !AGENT_NAME.test(as)) {
     throw new MemoryError("E_INPUT", "the agent's name must be 2 to 32 lower-case letters, digits or dashes, and not owner.");
   }
@@ -146,6 +149,7 @@ export function buildServer(memory: Memory, as: string): McpServer {
         const { structured, text } = await handler(args as Record<string, unknown>);
         return { content: [{ type: "text", text }], structuredContent: structured };
       } catch (err) {
+        if (!(err instanceof MemoryError)) opts?.onFault?.(err, name);
         const text = err instanceof MemoryError ? err.message : INTERNAL;
         return { isError: true, content: [{ type: "text", text }] };
       }
@@ -264,7 +268,10 @@ export async function runMcp(args: string[], deps?: McpDeps): Promise<number> {
   const memory = openMemory(home ?? resolveHome(deps?.env ?? process.env), { now: deps?.now, fetch: deps?.fetch });
   let server: McpServer;
   try {
-    server = buildServer(memory, as);
+    server = buildServer(memory, as, { onFault: (err, tool) => {
+      const why = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ");
+      stderr.write(`gravit-memory mcp: a fault inside ${tool}: ${why}\n`);
+    } });
   } catch (err) {
     if (err instanceof MemoryError) return refuse(err.message);
     throw err;
