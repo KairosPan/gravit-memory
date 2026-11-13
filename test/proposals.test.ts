@@ -113,6 +113,53 @@ test("accept of a change arms the changed card", async () => {
   expect(await stateOf(id)).toMatchObject({ state: "armed", card: changed });
 });
 
+test("neither accept nor edit writes over a new lesson's file that appeared", async () => {
+  const p = await proposeAs(newOne);
+  const own = STAND_IN_CARD.replace(`id: ${ID}`, `id: ${fresh.id}`).replace("No new position", "My own words: no new position");
+  await writeCard(home, own);
+  const file = join(home, "lessons", `${fresh.id}.md`);
+  const before = await readFile(file);
+  expect(await fails(accept(home, p.id, c.now()), "E_REFUSED")).toContain("reject this proposal, or arm your own file");
+  await fails(edit(home, p.id, c.now()), "E_REFUSED");
+  expect(await readFile(file)).toEqual(before);
+  expect(await ownerLines()).toEqual([]);
+  expect(await readdir(join(home, "armed"))).toEqual([]);
+  expect(await waitingProposals(home)).toEqual([p]);
+});
+
+test("neither accept nor edit writes over a changed card's edits", async () => {
+  const id = await writeCard(home);
+  await arm(home, id, c.now());
+  const p = await proposeAs({ what: "change", lesson: id, card: { ...card, strength: "red-line" }, reason: "It held." });
+  await writeCard(home, STAND_IN_CARD.replace("No new position", "Never a new position"));
+  const file = join(home, "lessons", `${id}.md`);
+  const before = await readFile(file);
+  expect(await fails(accept(home, p.id, c.now()), "E_REFUSED")).toContain("arm or discard the edit first");
+  await fails(edit(home, p.id, c.now()), "E_REFUSED");
+  expect(await readFile(file)).toEqual(before);
+  expect(await ownerLines()).toHaveLength(1);                                       // the arm alone
+  expect((await stateOf(id))?.state).toBe("changed");
+});
+
+test("a change on a card never armed is refused", async () => {
+  const id = await writeCard(home);
+  const p = await proposeAs({ what: "change", lesson: id, card: { ...card, strength: "red-line" }, reason: "It held." });
+  await fails(accept(home, p.id, c.now()), "E_REFUSED");
+  await fails(edit(home, p.id, c.now()), "E_REFUSED");
+  expect(await readFile(join(home, "lessons", `${id}.md`), "utf8")).toBe(STAND_IN_CARD);
+  expect(await ownerLines()).toEqual([]);
+});
+
+test("edit of a change on an armed card writes it, unarmed until armed", async () => {
+  const id = await writeCard(home);
+  await arm(home, id, c.now());
+  const changed: Card = { ...card, strength: "red-line" };
+  const p = await proposeAs({ what: "change", lesson: id, card: changed, reason: "It held." });
+  await edit(home, p.id, c.now());
+  expect(await readFile(join(home, "lessons", `${id}.md`), "utf8")).toBe(renderCard(changed));
+  expect((await stateOf(id))?.state).toBe("changed");
+});
+
 test("accept of a retirement retires", async () => {
   const id = await writeCard(home);
   await arm(home, id, c.now());

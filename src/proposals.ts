@@ -65,9 +65,7 @@ export async function accept(home: string, proposal: string, nowMs: number): Pro
     return { lesson };
   }
   const text = cardText(p);
-  if (p.what === "new" && (await readBytes(lessonPath(home, lesson))) !== null) {
-    throw new MemoryError("E_REFUSED", `lesson ${lesson} has a file now: answer this proposal with edit or reject.`);
-  }
+  await keepOwnersFile(home, p);
   const sha256 = sha256Hex(text);
   await writePrivate(lessonPath(home, lesson), text);
   await writePrivate(armedPath(home, lesson, sha256), text);
@@ -82,6 +80,7 @@ export async function edit(home: string, proposal: string, nowMs: number): Promi
     throw new MemoryError("E_REFUSED", `proposal ${proposal} retires a lesson: it has no card to edit; accept or reject it.`);
   }
   const text = cardText(p);
+  await keepOwnersFile(home, p);
   const path = lessonPath(home, p.lesson);
   await writePrivate(path, text);
   await appendLine<OwnerLine>(home, "owner.jsonl", "owner", nowMs, "w", { kind: "owner", act: "edit", proposal, lesson: p.lesson });
@@ -94,6 +93,25 @@ export async function reject(home: string, proposal: string, reason: string, now
   if (n < 1 || n > REASON_MAX) throw new MemoryError("E_INPUT", `reason must hold 1 to ${REASON_MAX} characters.`);
   await waiting(home, proposal);
   await appendLine<OwnerLine>(home, "owner.jsonl", "owner", nowMs, "w", { kind: "owner", act: "reject", proposal, reason });
+}
+
+/**
+ * Neither accept nor edit writes over a lessons/ file the owner holds that is not what was armed: a new lesson's
+ * file that has appeared since the proposal, or a card's working file that differs from its armed copy or was never
+ * armed. A file equal to the armed copy, or a retired card's, is written over as proposed.
+ */
+async function keepOwnersFile(home: string, p: ProposalLine): Promise<void> {
+  const bytes = await readBytes(lessonPath(home, p.lesson));
+  if (bytes === null) return;
+  if (p.what === "new") {
+    throw new MemoryError("E_REFUSED", `lesson ${p.lesson} has a file of its own now, lessons/${p.lesson}.md: `
+      + "reject this proposal, or arm your own file.");
+  }
+  const state = (await cardStates(home)).cards.find((c) => c.id === p.lesson);
+  if (state?.state === "retired") return;
+  if (state?.sha256 !== undefined && sha256Hex(bytes) === state.sha256) return;
+  throw new MemoryError("E_REFUSED", `lesson ${p.lesson} has edits in lessons/${p.lesson}.md that are not armed: `
+    + "arm or discard the edit first, then answer this proposal.");
 }
 
 /** A proposed card that breaks the card's schema is E_CARD, not E_INPUT: the same fault a card file would have. */

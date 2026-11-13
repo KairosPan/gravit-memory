@@ -111,6 +111,11 @@ test("show a decision with its figures, or a card with its record", async () => 
   expect("record" in card && card.record?.owner.fired).toBe(1);
 });
 
+test("a lesson id that begins d- is shown as a card", async () => {
+  await writeCard(home, STAND_IN_CARD.replace(`id: ${ID}`, "id: d-day-rule"));
+  expect(await memory.show("d-day-rule")).toMatchObject({ card: { id: "d-day-rule", state: "unarmed" } });
+});
+
 test("the agent's door reaches recall, record, amend, propose, reconcile, review, status and verify", async () => {
   await writeCard(home);
   await memory.owner.arm(ID);

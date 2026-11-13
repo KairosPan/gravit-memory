@@ -100,12 +100,14 @@ export function openMemory(home: string, deps?: Deps): Memory {
   };
 }
 
-/** A decision with its amendments and its figures, when the id begins "d-"; else a card with its record. */
+const DECISION_ID = /^d-\d{8}-[0-9a-f]{8}$/;
+
+/** A decision with its amendments and its figures, when the id is a decision's; else a card with its record. */
 async function show(home: string, id: string, nowMs: number): Promise<Awaited<ReturnType<Memory["show"]>>> {
   const cfg = await readConfig(home);
   const { views } = await readDecisions(home);
   const outcomes = (await readOutcomes(home)).lines;
-  if (id.startsWith("d-")) {
+  if (DECISION_ID.test(id)) {
     const decision = views.find((v) => v.line.id === id);
     if (!decision) throw new MemoryError("E_NOT_FOUND", `decision ${id} is not in the memory.`);
     return { decision, figures: figuresOf(id, outcomes, cfg.horizons) };
