@@ -5,8 +5,12 @@
 // The owner's acts (arm, retire, void, reseal, and review as a whole) refuse to run without a terminal before anything
 // is read from or written to the home, and no flag answers for the owner. Each shows what will change, then asks
 // `Type yes to <act>:`; anything but exactly `yes` changes nothing. They reach the core only through Memory.owner.
-// Exit codes: 0 done; 1 nothing changed, a refusal, or verify not sound; 2 misuse. Every word that reaches the terminal
-// passes `visible` first, so text from the home cannot carry a control character that hides or forges what is shown.
+// Exit codes: 0 done; 1 nothing changed, a refusal, or verify not sound; 2 misuse.
+//
+// Text from the home (ledger lines, card files) is data, never the tool's own words: a field that is one line has its
+// newlines shown as \n (`one`), a value that may span lines is printed behind a fence, "  | " on each line (`fence`),
+// so no line of it starts at column zero and none can pose as a question or a result. Every word that reaches the
+// terminal then passes `visible`, so no control, format or separator character hides or reorders what is shown.
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -57,14 +61,38 @@ function usage(): string {
     "The owner's acts (review, arm, retire, void, reseal) run only at a terminal, and each asks you to type yes."].join("\n");
 }
 
-const CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g;
+/** C0 and C1 controls but the newline (tab included), DEL, format characters (bidi, zero-width, BOM), separators. */
+const UNSEEN = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/gu;
 
-/**
- * The text with every C0 and C1 control character but the newline (tab included) and DEL written as a visible
- * \uXXXX escape. Inside a JSON document's string that escape is JSON's own, so the document reads back the same.
- */
+/** The text with every unseen character written as a visible \uXXXX escape, or \u{XXXXX} above U+FFFF. */
 export function visible(text: string): string {
-  return text.replace(CONTROL, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return text.replace(UNSEEN, (ch) => {
+    const cp = ch.codePointAt(0)!;
+    return cp > 0xffff ? `\\u{${cp.toString(16)}}` : `\\u${cp.toString(16).padStart(4, "0")}`;
+  });
+}
+
+/** A JSON document with every unseen character as JSON's own \uXXXX escape (a surrogate pair above U+FFFF). */
+function jsonText(value: unknown): string {
+  return JSON.stringify(value, null, 2).replace(UNSEEN, (ch) =>
+    [...Array(ch.length).keys()].map((i) => `\\u${ch.charCodeAt(i).toString(16).padStart(4, "0")}`).join(""));
+}
+
+/** A one-line field from the home: a newline in it is shown as \n, so it cannot start a line of its own. */
+function one(text: string): string {
+  return text.replaceAll("\n", "\\n");
+}
+
+const FENCE = "  | ";
+
+/** Text from the home that may span lines, every line behind the fence. */
+function fence(text: string): string {
+  return text.split("\n").map((line) => `${FENCE}${line}`).join("\n");
+}
+
+/** A labelled value from the home: on the label's line when it is one line, else fenced beneath it. */
+function field(label: string, value: string): string[] {
+  return value.includes("\n") ? [`${label}:`, fence(value)] : [`${label}: ${value}`];
 }
 
 /** Runs one command line; the answer is the exit code: 0 done, 1 nothing changed or a refusal, 2 misuse. */
@@ -130,8 +158,8 @@ export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<numb
     }
     return misuse("is not a command.");
   } catch (err) {
-    if (err instanceof MemoryError) { io.err(`gravit-memory: ${err.message}`); return 1; }
-    io.err(`gravit-memory failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (err instanceof MemoryError) { io.err(`gravit-memory: ${one(err.message)}`); return 1; }
+    io.err(`gravit-memory failed: ${one(err instanceof Error ? err.message : String(err))}`);
     return 1;
   }
 }
@@ -159,10 +187,10 @@ async function arm(io: Io, memory: Memory, lesson: string): Promise<number> {
   const text = bytes.toString("utf8");
   io.out(`Arm lesson ${lesson} as its file is now:`);
   io.out("");
-  io.out(text.trimEnd());
+  io.out(fence(text.trimEnd()));
   io.out("");
   if (state.state === "changed" || state.state === "broken") {
-    io.out(`This replaces the card armed on ${state.armedAt ?? "an earlier day"}. The difference from the armed copy:`);
+    io.out(`This replaces the card armed on ${one(state.armedAt ?? "an earlier day")}. The difference from the armed copy:`);
     io.out(await difference(memory.home, state, text));
   } else if (state.state === "retired") {
     io.out("This arms again a lesson that was retired.");
@@ -179,11 +207,12 @@ async function retire(io: Io, memory: Memory, lesson: string, reason: string): P
   if (!(state.state === "armed" || state.state === "changed" || state.state === "broken")) {
     throw new MemoryError("E_REFUSED", `lesson ${lesson} is not armed: only an armed card is retired.`);
   }
-  io.out(`Retire lesson ${lesson}, armed on ${state.armedAt ?? "an earlier day"}:`);
+  io.out(`Retire lesson ${lesson}, armed on ${one(state.armedAt ?? "an earlier day")}:`);
   io.out("");
-  io.out(((state.sha256 ? await readText(armedPath(memory.home, lesson, state.sha256)) : null) ?? "(its armed copy is missing)").trimEnd());
+  const armed = state.sha256 ? await readText(armedPath(memory.home, lesson, state.sha256)) : null;
+  io.out(armed === null ? "(its armed copy is missing)" : fence(armed.trimEnd()));
   io.out("");
-  io.out(`Reason: ${reason}`);
+  io.out(field("Reason", reason).join("\n"));
   if (!(await confirm(io, "retire"))) return 1;
   await memory.owner.retire(lesson, reason);
   io.out(`Retired lesson ${lesson}: it applies no more until it is armed again.`);
@@ -200,7 +229,7 @@ async function voidDecision(io: Io, memory: Memory, decision: string, reason: st
   io.out("");
   io.out(decisionLines(shown.decision).join("\n"));
   io.out("");
-  io.out(`Reason: ${reason}`);
+  io.out(field("Reason", reason).join("\n"));
   if (!(await confirm(io, "void"))) return 1;
   await memory.owner.void(decision, reason);
   io.out(`Voided decision ${decision}.`);
@@ -232,7 +261,7 @@ async function review(io: Io, memory: Memory): Promise<number> {
       await fn();
     } catch (err) {
       if (!(err instanceof MemoryError)) throw err;
-      io.err(`gravit-memory: ${err.message}`);
+      io.err(`gravit-memory: ${one(err.message)}`);
       refused = true;
     }
   };
@@ -245,18 +274,18 @@ async function review(io: Io, memory: Memory): Promise<number> {
       if (choice === "accept") {
         if (!(await confirm(io, "accept"))) return;
         const { lesson } = await memory.owner.accept(p.id);
-        io.out(p.what === "retire" ? `Accepted: lesson ${lesson} is retired.` : `Accepted: lesson ${lesson} is armed.`);
+        io.out(p.what === "retire" ? `Accepted: lesson ${one(lesson)} is retired.` : `Accepted: lesson ${one(lesson)} is armed.`);
       } else if (choice === "edit") {
         const { lesson, path } = await memory.owner.edit(p.id);
-        io.out(`Lesson ${lesson} is written, unarmed, at ${path}: edit it, then run gravit-memory arm ${lesson}.`);
+        io.out(`Lesson ${one(lesson)} is written, unarmed, at ${one(path)}: edit it, then run gravit-memory arm ${one(lesson)}.`);
       } else if (choice === "reject") {
         const why = (await io.ask("Why reject it? ")).trim();
         if (why === "") { io.out(`A rejection needs a word why: ${NOTHING}.`); return; }
         if (!(await confirm(io, "reject"))) return;
         await memory.owner.reject(p.id, why);
-        io.out(`Rejected proposal ${p.id}.`);
+        io.out(`Rejected proposal ${one(p.id)}.`);
       } else {
-        io.out(choice === "skip" ? "Skipped: it waits." : `${choice || "No answer"} is not accept, edit, reject or skip: it waits.`);
+        io.out(choice === "skip" ? "Skipped: it waits." : `${one(choice) || "No answer"} is not accept, edit, reject or skip: it waits.`);
       }
     });
   }
@@ -266,20 +295,20 @@ async function review(io: Io, memory: Memory): Promise<number> {
     await each(async () => {
       io.out("");
       const bytes = await readBytes(lessonPath(memory.home, s.id));    // read once: shown, then armed only if unchanged
-      io.out(`Lesson ${s.id} has changed since it was armed on ${s.armedAt ?? "an earlier day"}:`);
+      io.out(`Lesson ${one(s.id)} has changed since it was armed on ${one(s.armedAt ?? "an earlier day")}:`);
       io.out(await difference(memory.home, s, bytes === null ? null : bytes.toString("utf8")));
       const choice = (await io.ask("Answer arm, discard or skip: ")).trim();
       if (choice === "arm") {
         if (!(await confirm(io, "arm"))) return;
-        if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${s.id} has no file: write lessons/${s.id}.md first.`);
+        if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${one(s.id)} has no file: write lessons/${one(s.id)}.md first.`);
         const { sha256 } = await memory.owner.arm(s.id, sha256Hex(bytes));
-        io.out(`Armed lesson ${s.id} as its file is now (${sha256.slice(0, 12)}).`);
+        io.out(`Armed lesson ${one(s.id)} as its file is now (${sha256.slice(0, 12)}).`);
       } else if (choice === "discard") {
         if (!(await confirm(io, "discard"))) return;
         await memory.owner.discard(s.id);
-        io.out(`Discarded the edit: lessons/${s.id}.md is as it was armed.`);
+        io.out(`Discarded the edit: lessons/${one(s.id)}.md is as it was armed.`);
       } else {
-        io.out(choice === "skip" ? "Skipped: the armed copy still applies." : `${choice || "No answer"} is not arm, discard or skip: the armed copy still applies.`);
+        io.out(choice === "skip" ? "Skipped: the armed copy still applies." : `${one(choice) || "No answer"} is not arm, discard or skip: the armed copy still applies.`);
       }
     });
   }
@@ -296,22 +325,22 @@ async function init(io: Io, home: string): Promise<number> {
 
 async function showStatus(io: Io, memory: Memory, json: boolean): Promise<number> {
   const s = await memory.status();
-  if (json) { io.out(JSON.stringify(s, null, 2)); return 0; }
+  if (json) { io.out(jsonText(s)); return 0; }
   io.out(statusLines(s).join("\n"));
   return 0;
 }
 
 async function lessons(io: Io, memory: Memory, json: boolean): Promise<number> {
   const { cards } = await memory.status();
-  if (json) { io.out(JSON.stringify(cards, null, 2)); return 0; }
+  if (json) { io.out(jsonText(cards)); return 0; }
   if (cards.length === 0) { io.out("No lesson cards yet: write one in lessons/<id>.md, then run gravit-memory arm <id>."); return 0; }
-  const width = Math.max(...cards.map((c) => c.id.length));
+  const width = Math.max(...cards.map((c) => one(c.id).length));
   const out: string[] = [];
   for (const c of cards) {
     const head = c.card ? `  ${c.card.says} ${c.card.actions.join(", ")}, ${c.card.strength}` : "";
-    out.push(`${c.id.padEnd(width)}  ${c.state}${head}`);
-    if (c.card) out.push(`  ${c.card.words.replaceAll("\n", "\n  ")}`);
-    if (c.fault) out.push(`  fault: ${c.fault}`);
+    out.push(`${one(c.id).padEnd(width)}  ${c.state}${head}`);
+    if (c.card) out.push(fence(c.card.words));
+    if (c.fault) out.push(`  fault: ${one(c.fault)}`);
   }
   io.out(out.join("\n"));
   return 0;
@@ -319,15 +348,15 @@ async function lessons(io: Io, memory: Memory, json: boolean): Promise<number> {
 
 async function show(io: Io, memory: Memory, id: string, json: boolean): Promise<number> {
   const shown = await memory.show(id);
-  if (json) { io.out(JSON.stringify(shown, null, 2)); return 0; }
+  if (json) { io.out(jsonText(shown)); return 0; }
   if ("decision" in shown) {
     io.out([...decisionLines(shown.decision), "Figures:", `  ${figuresText(shown.figures)}`].join("\n"));
     return 0;
   }
   const { card, record } = shown;
-  const out = [`${card.id}: ${card.state}${card.armedAt ? `, armed on ${card.armedAt}` : ""}${card.sha256 ? ` (${card.sha256.slice(0, 12)})` : ""}`];
-  if (card.fault) out.push(`fault: ${card.fault}`);
-  if (card.card) out.push("", renderCard(card.card).trimEnd(), "");
+  const out = [`${one(card.id)}: ${card.state}${card.armedAt ? `, armed on ${one(card.armedAt)}` : ""}${card.sha256 ? ` (${one(card.sha256.slice(0, 12))})` : ""}`];
+  if (card.fault) out.push(`fault: ${one(card.fault)}`);
+  if (card.card) out.push("", fence(renderCard(card.card).trimEnd()), "");
   if (record) out.push("Record:", ...recordLines(record).map((l) => `  ${l}`));
   io.out(out.join("\n"));
   return 0;
@@ -337,19 +366,19 @@ async function reconcile(io: Io, memory: Memory): Promise<number> {
   const r = await memory.reconcile(RECONCILER);
   if (r.source === null) { io.out("No price source is set: nothing was measured. Set prices.url in config.json."); return 0; }
   io.out(`Measured ${r.measured}, closed ${r.closed}, still due ${r.stillDue}, refused ${r.refused.length}, unmeasured ${r.unmeasured.length}.`);
-  for (const x of r.refused) io.out(`  refused: ${x.symbol} in ${x.market}: ${x.why}`);
-  for (const x of r.unmeasured) io.out(`  unmeasured: ${x.decision}: ${x.why}`);
+  for (const x of r.refused) io.out(`  refused: ${one(x.symbol)} in ${one(x.market)}: ${one(x.why)}`);
+  for (const x of r.unmeasured) io.out(`  unmeasured: ${one(x.decision)}: ${x.why}`);
   return 0;
 }
 
 async function verify(io: Io, memory: Memory, json: boolean): Promise<number> {
   const v = await memory.verify();
-  if (json) { io.out(JSON.stringify(v, null, 2)); return v.ok ? 0 : 1; }
+  if (json) { io.out(jsonText(v)); return v.ok ? 0 : 1; }
   if (v.ok) { io.out("Sound: every chain holds, every id a line points at is there, no armed card is broken."); return 0; }
   const out = ["Not sound:"];
   for (const ch of v.chains) if (!ch.ok) out.push(`  ${ch.file}: the chain breaks at line ${ch.line ?? "?"}`);
-  for (const d of v.dangling) out.push(`  ${d.file} line ${d.line}: points at ${d.points_at}, which is not there`);
-  for (const c of v.cards) if (c.state === "broken") out.push(`  lesson ${c.id} is broken: ${c.fault ?? ""}`);
+  for (const d of v.dangling) out.push(`  ${d.file} line ${d.line}: points at ${one(d.points_at)}, which is not there`);
+  for (const c of v.cards) if (c.state === "broken") out.push(`  lesson ${one(c.id)} is broken: ${one(c.fault ?? "")}`);
   io.out(out.join("\n"));
   return 1;
 }
@@ -392,9 +421,9 @@ async function difference(home: string, s: CardState, working: string | null): P
     for (const y of ys) left.set(y, (left.get(y) ?? 0) + 1);
     return xs.filter((x) => { const n = left.get(x) ?? 0; if (n > 0) { left.set(x, n - 1); return false; } return true; });
   };
-  const out = [...only(a, w).map((l) => `- ${l}`), ...only(w, a).map((l) => `+ ${l}`)];
+  const out = [...only(a, w).map((l) => `${FENCE}- ${l}`), ...only(w, a).map((l) => `${FENCE}+ ${l}`)];
   if (armed === null) out.unshift("(its armed copy is missing)");
-  if (working === null) out.unshift(`(lessons/${s.id}.md is gone)`);
+  if (working === null) out.unshift(`(lessons/${one(s.id)}.md is gone)`);
   return out.length > 0 ? out.join("\n") : "(no line differs; the bytes do, such as line ends)";
 }
 
@@ -409,20 +438,23 @@ function figuresText(figures: Figure[]): string {
 
 const BASE = new Set(["v", "kind", "id", "seq", "prev", "t", "by", "sum"]);
 
-function fieldLines(obj: object, skip: Set<string>): string[] {
-  return Object.entries(obj).filter(([k]) => !skip.has(k))
-    .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+/** A line's own fields, each a labelled value (a JSON value on one line), indented by `indent`. */
+function fieldLines(obj: object, skip: Set<string>, indent: string): string[] {
+  return Object.entries(obj).filter(([k]) => !skip.has(k)).flatMap(([k, v]) => {
+    const [head, ...rest] = field(`${indent}${one(k)}`, typeof v === "string" ? v : JSON.stringify(v));
+    return [head!, ...rest];
+  });
 }
 
 function decisionLines(v: DecisionView): string[] {
   const l = v.line;
-  const on = l.symbol !== undefined ? ` ${l.symbol}${l.market !== undefined ? ` in ${l.market}` : ""}` : "";
-  const out = [`Decision ${l.id}${v.void ? " (void)" : ""}: ${l.action}${on}, whose ${l.whose}, registered ${l.t} by ${l.by}`,
-    ...fieldLines(l, new Set([...BASE, "action", "whose", "symbol", "market"])).map((x) => `  ${x}`)];
+  const on = l.symbol !== undefined ? ` ${one(l.symbol)}${l.market !== undefined ? ` in ${one(l.market)}` : ""}` : "";
+  const out = [`Decision ${one(l.id)}${v.void ? " (void)" : ""}: ${one(l.action)}${on}, whose ${one(l.whose)}, registered ${one(l.t)} by ${one(l.by)}`,
+    ...fieldLines(l, new Set([...BASE, "action", "whose", "symbol", "market"]), "  ")];
   if (v.amends.length > 0) {
     out.push("Amendments:");
     for (const a of v.amends) {
-      out.push(`  ${a.id} ${a.t} by ${a.by}: ${a.what}`, ...fieldLines(a, new Set([...BASE, "decision", "what"])).map((x) => `    ${x}`));
+      out.push(`  ${one(a.id)} ${one(a.t)} by ${one(a.by)}: ${one(a.what)}`, ...fieldLines(a, new Set([...BASE, "decision", "what"]), "    "));
     }
   }
   return out;
@@ -431,7 +463,7 @@ function decisionLines(v: DecisionView): string[] {
 function recordLines(r: CardRecord): string[] {
   const o = r.owner;
   const cases = (name: string, xs: CardRecord["followed"]) =>
-    xs.length === 0 ? [] : [`${name}: ${xs.map((c) => `${c.decision} ${c.date} ${c.action}${c.symbol ? ` ${c.symbol}` : ""}`).join("; ")}`];
+    xs.length === 0 ? [] : [`${name}: ${xs.map((c) => one(`${c.decision} ${c.date} ${c.action}${c.symbol ? ` ${c.symbol}` : ""}`)).join("; ")}`];
   const medians = (name: string, m: Record<number, number>) => {
     const ks = Object.keys(m);
     return ks.length === 0 ? [] : [`median ${name}: ${ks.map((k) => `${k}d ${pct(m[Number(k)] ?? null)}`).join(", ")}`];
@@ -460,20 +492,20 @@ function statusLines(s: Status): string[] {
     : `Lessons: ${s.cards.length} (${[...states].map(([state, k]) => `${k} ${state}`).join(", ")})`);
   if (s.facts.length > 0) {
     out.push("Facts the applying lessons need:");
-    for (const f of s.facts) out.push(`  ${f.fact} (${f.card}): ${f.definition}`);
+    for (const f of s.facts) out.push(`  ${one(f.fact)} (${one(f.card)}): ${one(f.definition)}`);
   }
-  if (s.tags.length > 0) out.push(`Tags: ${s.tags.map((t) => `${t.tag} ${t.count}`).join(", ")}`);
+  if (s.tags.length > 0) out.push(`Tags: ${s.tags.map((t) => `${one(t.tag)} ${t.count}`).join(", ")}`);
   if (s.prices.url === "") {
     out.push("Prices: no price source: set prices.url in config.json");
   } else {
     const last = s.prices.last;
-    out.push(`Prices: ${s.prices.url}${last ? `; last reconcile ${last.t}, ${last.ok ? "answered" : "did not answer"}, ${last.refused} refused` : "; never reconciled"}`);
+    out.push(`Prices: ${one(s.prices.url)}${last ? `; last reconcile ${one(last.t)}, ${last.ok ? "answered" : "did not answer"}, ${last.refused} refused` : "; never reconciled"}`);
   }
   return out;
 }
 
 function pastLine(p: PastDecision): string {
-  return `${p.id} ${p.date} ${p.action}${p.symbol ? ` ${p.symbol}` : ""}, whose ${p.whose}: ${figuresText(p.figures)}`;
+  return `${one(`${p.id} ${p.date} ${p.action}${p.symbol ? ` ${p.symbol}` : ""}, whose ${p.whose}`)}: ${figuresText(p.figures)}`;
 }
 
 function reviewLines(r: Review): string[] {
@@ -482,24 +514,24 @@ function reviewLines(r: Review): string[] {
   out.push(`Lessons with a record: ${r.cards.length}`);
   for (const c of r.cards) {
     const flags = [c.quiet ? "quiet" : "", c.overridden_often ? "overridden often" : ""].filter(Boolean);
-    out.push(`  ${c.id}${flags.length > 0 ? ` (${flags.join(", ")})` : ""}`, ...recordLines(c.record).map((l) => `    ${l}`));
+    out.push(`  ${one(c.id)}${flags.length > 0 ? ` (${flags.join(", ")})` : ""}`, ...recordLines(c.record).map((l) => `    ${l}`));
   }
   if (r.tags_shared.length > 0) {
-    out.push("Tags shared by several decisions:", ...r.tags_shared.map((t) => `  ${t.tag}: ${t.decisions.join(", ")}`));
+    out.push("Tags shared by several decisions:", ...r.tags_shared.map((t) => `  ${one(t.tag)}: ${one(t.decisions.join(", "))}`));
   }
-  out.push(`Past their horizon, without a review: ${r.past_horizon.length === 0 ? "none" : r.past_horizon.join(", ")}`);
+  out.push(`Past their horizon, without a review: ${r.past_horizon.length === 0 ? "none" : one(r.past_horizon.join(", "))}`);
   out.push(`Decisions without wrong_if: ${r.without_wrong_if}`);
-  if (r.voided.length > 0) out.push(`Voided: ${r.voided.map((x) => `${x.decision} by ${x.by}`).join(", ")}`);
+  if (r.voided.length > 0) out.push(`Voided: ${one(r.voided.map((x) => `${x.decision} by ${x.by}`).join(", "))}`);
   out.push(`Proposals waiting: ${r.proposals.length}`);
   return out;
 }
 
 function proposalLines(p: ProposalLine): string[] {
   const verb = p.what === "new" ? "add" : p.what;
-  const out = [`Proposal ${p.id} by ${p.by}, ${p.t}: ${verb} lesson ${p.lesson}`];
-  if (p.card) out.push("", renderCard(p.card).trimEnd(), "");
-  out.push(`Reason: ${p.reason}`);
-  if (p.evidence && p.evidence.length > 0) out.push(`Evidence: ${p.evidence.join(", ")}`);
+  const out = [`Proposal ${one(`${p.id} by ${p.by}, ${p.t}: ${verb} lesson ${p.lesson}`)}`];
+  if (p.card) out.push("", fence(renderCard(p.card).trimEnd()), "");
+  out.push(...field("Reason", p.reason));
+  if (p.evidence && p.evidence.length > 0) out.push(`Evidence: ${p.evidence.map(one).join(", ")}`);
   return out;
 }
 
@@ -557,7 +589,7 @@ export function isEntry(argv1: string | undefined, moduleUrl: string, platform: 
 
 if (isEntry(process.argv[1], import.meta.url, process.platform)) {
   runCli(process.argv.slice(2), processIo()).then((code) => { process.exitCode = code; }, (err: unknown) => {
-    process.stderr.write(`gravit-memory failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`gravit-memory failed: ${visible(one(err instanceof Error ? err.message : String(err)))}\n`);
     process.exitCode = 1;
   });
 }

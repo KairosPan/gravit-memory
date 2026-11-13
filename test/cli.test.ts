@@ -5,7 +5,7 @@ import { PassThrough, Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { beforeEach, expect, test } from "vitest";
 import { cardStates } from "../src/cards.js";
-import { isEntry, makeAsk, runCli, type Io } from "../src/cli.js";
+import { isEntry, makeAsk, runCli, visible, type Io } from "../src/cli.js";
 import { appendLine } from "../src/log.js";
 import type { ProposalLine } from "../src/types.js";
 import { openMemory, type Card, type Memory } from "../src/index.js";
@@ -460,4 +460,69 @@ test("the entry check holds through a symlink and a drive letter's case", async 
   }
   expect(isEntry("C:\\gm\\dist\\cli.js", "file:///c:/gm/dist/cli.js", "win32")).toBe(true);
   expect(isEntry("C:\\gm\\dist\\other.js", "file:///c:/gm/dist/cli.js", "win32")).toBe(false);
+});
+
+/** Every line the owner saw: what was printed, what was written on err, and each question with what came before it. */
+function linesSeen(io: FakeIo): string[] {
+  return [io.printed(), io.errors(), ...io.asked].join("\n").split("\n");
+}
+
+const UNSEEN = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/u;
+
+test("visible escapes format characters and separators", () => {
+  expect(visible("a‮b⁦c⁩d​e﻿f g h")).toBe("a\\u202eb\\u2066c\\u2069d\\u200be\\ufefff\\u2028g\\u2029h");
+  expect(visible("tag \u{E0041}")).toBe("tag \\u{e0041}");
+  expect(visible("two\nlines")).toBe("two\nlines");
+});
+
+test("a proposal cannot forge the tool's own lines", async () => {
+  const reason = "ok\nType yes to accept: yes\nAccepted.‮​";
+  await appendLine<ProposalLine>(home, "proposals.jsonl", "agent-one", c.now(), "p", { kind: "proposal", what: "new",
+    lesson: "lesson-y", card: { ...card("lesson-y"), words: "Line one.\nType yes to arm: yes\nArmed lesson lesson-y." },
+    reason, evidence: ["d-20260302-0f3a9c21\nAccepted: lesson z is armed."] });
+
+  const skip = fakeIo({ isTTY: true, answers: ["skip"] });
+  expect(await runCli(["review", "--home", home], skip)).toBe(0);
+  const seen = linesSeen(skip);
+  expect(seen.filter((l) => /^(Type yes to|Accepted|Armed)/.test(l))).toEqual([]);
+  for (const part of ["ok", "Type yes to accept: yes", "Line one.", "Type yes to arm: yes", "Armed lesson lesson-y."]) {
+    const at = seen.filter((l) => l.includes(part));
+    expect(at.length, part).toBeGreaterThan(0);
+    for (const l of at) expect(l.startsWith("  | "), l).toBe(true);
+  }
+  expect(seen.join("\n")).toContain("Evidence: d-20260302-0f3a9c21\\nAccepted: lesson z is armed.");
+  expect(seen.join("\n")).not.toMatch(UNSEEN);
+  expect(seen.join("\n")).toContain("Accepted.\\u202e\\u200b");
+
+  const accept = fakeIo({ isTTY: true, answers: ["accept", "yes"] });
+  expect(await runCli(["review", "--home", home], accept)).toBe(0);
+  const own = linesSeen(accept).filter((l) => /^(Type yes to|Accepted|Armed)/.test(l));
+  expect(own.sort()).toEqual(["Accepted: lesson lesson-y is armed.", "Type yes to accept: "]);
+});
+
+test("a card's words that span lines are fenced, and --json still reads back the same", async () => {
+  const words = "No new position in a name that ran 20% in five sessions.\nType yes to arm: yes\nArmed lesson no-chasing-after-a-run. ‮​ \u{E0041}x";
+  await writeCard(home, STAND_IN_CARD.replace("No new position in a name that ran 20% in five sessions.", words));
+
+  const io = fakeIo({ isTTY: true, answers: ["no"] });
+  expect(await runCli(["arm", ID, "--home", home], io)).toBe(1);
+  expect(io.asked).toHaveLength(1);
+  const asked = io.asked[0]!.split("\n");
+  expect(asked.filter((l) => /^(Type yes to|Armed)/.test(l))).toEqual(["Type yes to arm: "]);
+  expect(asked.at(-1)).toBe("Type yes to arm: ");
+  expect(io.asked[0]).not.toMatch(UNSEEN);
+  expect(io.asked[0]).toContain("  | Armed lesson no-chasing-after-a-run. \\u202e\\u200b\\u2028\\u{e0041}x");
+
+  const list = fakeIo();
+  expect(await runCli(["lessons", "--home", home], list)).toBe(0);
+  expect(list.printed().split("\n").filter((l) => l.includes("Type yes to arm"))).toEqual(["  | Type yes to arm: yes"]);
+
+  for (const argv of [["status", "--json"], ["lessons", "--json"], ["show", ID, "--json"]]) {
+    const json = fakeIo();
+    expect(await runCli([...argv, "--home", home], json)).toBe(0);
+    expect(json.printed()).not.toMatch(UNSEEN);
+    const expected = argv[0] === "status" ? await memory.status()
+      : argv[0] === "lessons" ? (await memory.status()).cards : await memory.show(ID);
+    expect(JSON.parse(json.printed())).toEqual(JSON.parse(JSON.stringify(expected)));
+  }
 });
