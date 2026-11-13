@@ -100,6 +100,12 @@ export async function readDecisions(home: string): Promise<{ views: DecisionView
   return { views, log };
 }
 
+/** An agent's name, never the owner's: E_REFUSED for "owner", E_INPUT for anything that is not a name. */
+export function checkAgent(by: string): void {
+  if (by === "owner") throw new MemoryError("E_REFUSED", "no agent writes as the owner: write under your own name.");
+  checkWriter(by);
+}
+
 function checkWriter(by: string): void {
   if (!AGENT_NAME.test(by)) {
     throw new MemoryError("E_INPUT", "by must be an agent's name: 2 to 32 lower-case letters, digits or dashes.");

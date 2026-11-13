@@ -77,10 +77,10 @@ export function renderCard(card: Card): string {
 export async function cardStates(home: string): Promise<CardStates> {
   const log = await readLog<OwnerLine | ResealLine>(home, "owner.jsonl");
 
-  // From the log, in order: each lesson's last arming, undone by a later retirement.
+  // From the log, in order: each lesson's last arming, undone by a later retirement. Only the owner's own lines count.
   const arming = new Map<string, { sha256: string; t: string } | null>();
   for (const line of log.lines) {
-    if (line.kind !== "owner") continue;
+    if (line.kind !== "owner" || line.by !== "owner") continue;
     if (line.act === "arm" || (line.act === "accept" && line.sha256 !== undefined)) {
       arming.set(line.lesson, { sha256: line.sha256!, t: line.t });
     } else if (line.act === "retire" || line.act === "accept") {

@@ -11,11 +11,12 @@ import { FILES, readConfig } from "./home.js";
 import { AGENT_NAME, SHOW_CARDS, SHOW_LIKE, SHOW_SAME, SHOW_UNTOLD, THESIS_SHOWN } from "./limits.js";
 import { appendLine, readLog } from "./log.js";
 import { matchCard, type Need } from "./match.js";
+import { waitingProposals } from "./proposals.js";
 import { mayBeDue, readOutcomes } from "./reconcile.js";
 import { cardRecord, figuresOf, occasionsOf, type CardRecord, type Figure } from "./records.js";
 import { fitRecall } from "./render.js";
 import { parseInput, recallInput } from "./schema.js";
-import type { Action, Card, Deps, LogFile, OutcomeLine, OwnerLine, ProposalLine, RecallLine, ResealLine, Whose } from "./types.js";
+import type { Action, Card, Deps, LogFile, OutcomeLine, RecallLine, ResealLine, Whose } from "./types.js";
 
 export { FRAME, renderRecall } from "./render.js";
 
@@ -84,7 +85,8 @@ function rank(card: Card): number {
   return card.strength === "red-line" ? 0 : 1;
 }
 
-function pastOf(v: DecisionView, outcomes: OutcomeLine[], horizons: number[]): PastDecision {
+/** A decision as a recall or a review shows it: its head, its thesis cut to THESIS_SHOWN, its figures so far. */
+export function pastOf(v: DecisionView, outcomes: OutcomeLine[], horizons: number[]): PastDecision {
   const d = v.line;
   return {
     id: d.id,
@@ -110,19 +112,10 @@ async function houseOf(home: string, nowMs: number, states: Awaited<ReturnType<t
     if (log.partial) partial.push(file);
   }
 
-  const answered = new Set<string>();
-  for (const l of (await readLog<OwnerLine | ResealLine>(home, "owner.jsonl")).lines) {
-    if (l.kind === "owner" && l.by === "owner" && (l.act === "accept" || l.act === "edit" || l.act === "reject")) {
-      answered.add(l.proposal);
-    }
-  }
-  const proposals = (await readLog<ProposalLine | ResealLine>(home, "proposals.jsonl")).lines
-    .filter((l): l is ProposalLine => l.kind === "proposal");
-
   return {
     armed: states.applying.length,
     may_be_due: await mayBeDue(home, nowMs),
-    proposals_waiting: proposals.filter((p) => !answered.has(p.id)).length,
+    proposals_waiting: (await waitingProposals(home)).length,
     cards_changed: states.cards.filter((c) => c.state === "changed").map((c) => c.id),
     cards_broken: states.cards.filter((c) => c.state === "broken").map((c) => c.id),
     owner_chain_broken: states.ownerChainBroken,

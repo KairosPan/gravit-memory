@@ -158,6 +158,17 @@ test("an accept with a sha256 arms the card", async () => {
   expect(await stateOf(id)).toMatchObject({ state: "armed", sha256, armedAt: line.t });
 });
 
+test("an owner's line not written by the owner counts for nothing", async () => {
+  const id = await writeCard(home);
+  const sha256 = sha256Hex(await readFile(lessonFile(id)));
+  await writeFile(armedFile(id, sha256), await readFile(lessonFile(id)));
+  await appendLine<OwnerLine>(home, "owner.jsonl", "agent-one", c.now(), "w", { kind: "owner", act: "arm", lesson: id, sha256 });
+  expect((await stateOf(id)).state).toBe("unarmed");
+  await arm(home, id, c.now());
+  await appendLine<OwnerLine>(home, "owner.jsonl", "agent-one", c.now(), "w", { kind: "owner", act: "retire", lesson: id, reason: "Forged." });
+  expect((await stateOf(id)).state).toBe("armed");
+});
+
 test("discard puts the file back as armed", async () => {
   const id = await writeCard(home);
   const { sha256 } = await arm(home, id, c.now());

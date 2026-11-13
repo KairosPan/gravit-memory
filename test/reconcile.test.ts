@@ -181,6 +181,25 @@ test("a refused benchmark holds its market's measuring back", async () => {
   expect(await outcomes()).toEqual([]);
 });
 
+test("a refused benchmark still lets the price leg and a closed line be written", async () => {
+  await useSource(stub.url);
+  const d = await record({ ...nvda, price: 101 });
+  const old = await record({ ...nvda, symbol: "AMD", decided_at: "2026-02-02T15:00:00Z" });
+  stub.set("NVDA", cboeAnswer(bars));
+  stub.set("AMD", cboeAnswer(bars));                                              // day 0 of AMD is before its first bar
+  stub.set("SPY", { ok: false, refusal: { message: "Cboe is not answering" } }, 409);
+  c.set("2026-03-11T12:00:00Z");
+  const report = await run();
+  expect(report.refused).toEqual([{ market: "US", symbol: "SPY", why: "Cboe is not answering" }]);
+  expect(report).toMatchObject({ measured: 1, closed: 1, stillDue: 1 });
+  expect((await outcomes()).map((l) => [l.decision, l.what])).toEqual([[d.id, "leg"], [old.id, "closed"]]);
+});
+
+test("reconcile writes only under an agent's name", async () => {
+  await expect(run("owner")).rejects.toMatchObject({ code: "E_REFUSED" });
+  await expect(run("Agent One")).rejects.toMatchObject({ code: "E_INPUT" });
+});
+
 test("mayBeDue", async () => {
   await useSource(stub.url);
   c.set("2026-03-02T15:00:00Z");                                                   // Monday

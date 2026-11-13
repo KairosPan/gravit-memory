@@ -58,7 +58,8 @@ function checkLesson(lesson: string): void {
   }
 }
 
-async function writePrivate(path: string, bytes: Uint8Array): Promise<void> {
+/** Writes a file of the home readable by its user alone. */
+export async function writePrivate(path: string, bytes: Uint8Array | string): Promise<void> {
   await writeFile(path, bytes, { mode: 0o600 });
   if (POSIX) await chmod(path, 0o600);
 }

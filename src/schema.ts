@@ -119,7 +119,9 @@ export const cardSchema = z.strictObject({
   check: z.array(check).optional(),
   facts: z.record(factName, chars(NOTE_MAX)).optional(),
   source: z.array(z.string()).optional(),
-  words: chars(CARD_WORDS_MAX),
+  // As a card file gives them: trimmed, and no CR, so a card written from these fields parses back the same.
+  words: chars(CARD_WORDS_MAX).refine((s) => s === s.trim() && !s.includes("\r"),
+    "must not start or end with a space or a line break, nor hold a carriage return"),
 }).superRefine((v, ctx) => {
   (v.check ?? []).forEach((c, i) => {
     if (!v.facts || !(c.fact in v.facts)) {

@@ -3,9 +3,9 @@
 // Each market-and-symbol pair is read once per reconcile, and each market's benchmark once, so every figure of one
 // reconcile for one symbol comes from one answer of the source. Whether the source last answered is kept in
 // last-reconcile.json (D-j), a plain file that is overwritten, not a ledger.
-import { chmod, writeFile } from "node:fs/promises";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { readDecisions, type DecisionView } from "./decisions.js";
+import { checkAgent, readDecisions, type DecisionView } from "./decisions.js";
 import { readConfig } from "./home.js";
 import { appendLine, readLog, type Fields, type LogRead } from "./log.js";
 import { measure, targetDate, weekdaysGone, type Series } from "./outcomes.js";
@@ -28,9 +28,11 @@ export async function readOutcomes(home: string): Promise<LogRead<OutcomeLine>> 
 
 /**
  * Asks the price source for the bars of every decision with something left to measure and appends what they
- * measure, as `by`. A source that refuses a symbol, or its market's benchmark, writes nothing for it this time.
+ * measure, as `by`, an agent. A source that refuses a symbol writes nothing for it this time; one that refuses its
+ * market's benchmark holds back the market's horizons, not its price legs or closed lines.
  */
 export async function reconcile(home: string, by: string, deps: Deps): Promise<ReconcileReport> {
+  checkAgent(by);
   const cfg = await readConfig(home);
   const nowMs = (deps.now ?? Date.now)();
   const fetchImpl = deps.fetch ?? globalThis.fetch;
@@ -60,6 +62,19 @@ export async function reconcile(home: string, by: string, deps: Deps): Promise<R
   return report;
 }
 
+/** What last-reconcile.json says of the last reconcile, or undefined when there is none or it is not that. */
+export async function lastReconcile(home: string): Promise<{ t: string; ok: boolean; refused: number } | undefined> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(join(home, LAST_FILE), "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const { t, ok, refused } = raw as Record<string, unknown>;
+  return typeof t === "string" && typeof ok === "boolean" && typeof refused === "number" ? { t, ok, refused } : undefined;
+}
+
 /**
  * How many decisions have a horizon unmeasured that may be due by now (D-i), from the files alone: no bars are read.
  */
@@ -73,7 +88,7 @@ export async function mayBeDue(home: string, nowMs: number): Promise<number | "n
 /**
  * Reads one market's symbols, each once (a US-style venue once more with the longer limit when a decision's day 0
  * is not among the bars), then its benchmark once when a horizon line would carry it, and measures each decision.
- * Refusals go to the report; the decisions they hold back get nothing.
+ * Refusals go to the report; a refused symbol's decisions get nothing, a refused benchmark's no horizon.
  */
 async function measureMarket(cfg: Config, market: string, list: Pending[], fetchImpl: typeof fetch,
   report: ReconcileReport): Promise<Array<[Pending, ReturnType<typeof measure>]>> {
@@ -104,7 +119,9 @@ async function measureMarket(cfg: Config, market: string, list: Pending[], fetch
         const got = await readDaily(cfg, market, m.benchmark, fetchImpl, { limit });
         if ("refused" in got) {
           report.refused.push({ market, symbol: m.benchmark, why: got.refused });
-          return [];                                                   // no horizon goes without its benchmark
+          // No horizon goes without its benchmark; a price leg or a closed line needs none.
+          return ready.map((p) => [p, measure(p.view.line, m, reads.get(p.symbol)!.series, null, cfg.horizons, p.have)
+            .filter((b) => b.what !== "horizon")]);
         }
         bench = { symbol: m.benchmark, series: got };
         if (kept) reads.set(m.benchmark, { series: got, limit });      // one answer for the symbol, its own figures too
