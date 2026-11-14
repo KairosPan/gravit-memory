@@ -15,7 +15,7 @@
 // A value from the store printed unquoted (an id, a writer's name, a symbol, a market, an action, a date, a fact's
 // name) passes `ident`: printed as it is only when it has its shape, else quoted. The command line and the tools'
 // texts (src/texts.ts) use the same guard and the same shapes.
-import { AGENT_NAME, FACT_NAME, IDENT_MAX, LESSON_ID, RECALL_MAX_BYTES, RECALL_STRUCT_MAX_BYTES } from "./limits.js";
+import { AGENT_NAME, FACT_NAME, IDENT_MAX, IDENT_MAX_BYTES, LESSON_ID, RECALL_MAX_BYTES, RECALL_STRUCT_MAX_BYTES } from "./limits.js";
 import type { Case, CardRecord, Figure } from "./records.js";
 import type { AppliedCard, House, PastDecision, RecallAnswer, UntoldCard } from "./recall.js";
 import { ACTIONS, MARKET, SYMBOL } from "./schema.js";
@@ -104,32 +104,33 @@ const SHAPES: Shape[] = [
 ];
 
 /** The text of a recall, at most RECALL_MAX_BYTES. */
-export function renderRecall(a: Answer): string {
-  return fitRecall(a).text;
+export function renderRecall(a: Answer, changed?: ReadonlySet<string>): string {
+  return fitRecall(a, changed).text;
 }
 
 /**
  * The text, and the answer as the text shows it (`shownAs`): an untold card the last steps leave out moves into
- * `untold_more`, an applying one from `applies` into `applies_more`.
+ * `untold_more`, an applying one from `applies` into `applies_more`. `changed` is every card changed since armed, for
+ * the mark on an applying card the house's bounded list may not name; the house's list when it is not given.
  */
-export function fitRecall(a: Answer): { answer: Answer; text: string } {
+export function fitRecall(a: Answer, changed: ReadonlySet<string> = new Set(a.house.cards_changed)): { answer: Answer; text: string } {
   let out = { answer: a, text: "" };
   for (const shape of SHAPES) {
-    out = { answer: shownAs(a, shape), text: render(a, shape) };
+    out = { answer: shownAs(a, shape), text: render(a, shape, changed) };
     if (fits(out)) return out;
   }
   const last = SHAPES.at(-1)!;
   let cur = a;
   while (cur.untold.length > 0) {
     cur = { ...cur, untold: cur.untold.slice(0, -1), untold_more: cur.untold_more + 1 };
-    out = { answer: shownAs(cur, last), text: render(cur, last) };
+    out = { answer: shownAs(cur, last), text: render(cur, last, changed) };
     if (fits(out)) return out;
   }
   while (cur.applies.length > 0) {
     const i = cur.applies.findLastIndex((c) => c.strength === "caveat");
     const at = i === -1 ? cur.applies.length - 1 : i;
     cur = { ...cur, applies: cur.applies.filter((_, j) => j !== at), applies_more: cur.applies_more + 1 };
-    out = { answer: shownAs(cur, last), text: render(cur, last) };
+    out = { answer: shownAs(cur, last), text: render(cur, last, changed) };
     if (fits(out)) return out;
   }
   return out;
@@ -155,12 +156,12 @@ function shownAs(a: Answer, s: Shape): Answer {
   };
 }
 
-function render(a: Answer, s: Shape): string {
+function render(a: Answer, s: Shape, changed: ReadonlySet<string>): string {
   const out: string[] = [F.applyHead];
   if (a.house.owner_chain_broken) out.push(F.ownerBroken);
   else if (a.house.armed === 0) out.push(F.noneArmed);
   else if (a.applies.length === 0 && a.applies_more === 0) out.push(F.noneApply);
-  for (const card of a.applies) out.push(...applied(card, a.house, s));
+  for (const card of a.applies) out.push(...applied(card, changed, s));
   if (a.applies_more > 0) out.push(`${a.applies_more} ${F.notShown}`);
 
   out.push(F.untoldHead);
@@ -174,9 +175,9 @@ function render(a: Answer, s: Shape): string {
   return out.join("\n");
 }
 
-function applied(card: AppliedCard, h: House, s: Shape): string[] {
+function applied(card: AppliedCard, changedSince: ReadonlySet<string>, s: Shape): string[] {
   const strength = card.strength === "red-line" ? F.redLine : F.caveat;
-  const changed = h.cards_changed.includes(card.id) ? ` ${F.changed}` : "";
+  const changed = changedSince.has(card.id) ? ` ${F.changed}` : "";
   return [
     `- ${strength} ${ident(card.id, LESSON_ID)}, ${F.says} ${ident(card.says, SAYS)} ${F.on} `
       + `${card.actions.map((a) => ident(a, ACTION)).join(", ")}${changed}`,
@@ -241,17 +242,28 @@ function house(h: House): string[] {
   const lines = [`- ${F.armed} ${h.armed}`,
     typeof h.may_be_due === "number" ? `- ${F.mayBeDue} ${h.may_be_due}` : `- ${F.noPriceSource}`,
     `- ${F.proposals} ${h.proposals_waiting}`];
-  if (h.cards_changed.length > 0) lines.push(`- ${F.changedCards} ${names(h.cards_changed)}`);
-  if (h.cards_broken.length > 0) lines.push(`- ${F.brokenCards} ${names(h.cards_broken)}`);
+  if (h.cards_changed.length > 0) lines.push(`- ${F.changedCards} ${names(h.cards_changed, h.cards_changed_more)}`);
+  if (h.cards_broken.length > 0) lines.push(`- ${F.brokenCards} ${names(h.cards_broken, h.cards_broken_more)}`);
   if (h.owner_chain_broken) lines.push(`- ${F.ownerChain}`);
   for (const c of h.chains_broken) lines.push(`- ${F.chainBroken} ${c.file} ${F.atLine} ${c.line}`);
   if (h.partial.length > 0) lines.push(`- ${F.partial} ${h.partial.join(", ")}`);
   return lines;
 }
 
-function names(ids: string[]): string {
+/** A house list as the text writes it: the names it holds, then how many more, from its count or its own length. */
+function names(ids: string[], more?: number): string {
+  const left = (more ?? 0) + Math.max(0, ids.length - HOUSE_LIST);
   const shown = ids.slice(0, HOUSE_LIST).map((id) => ident(id, LESSON_ID)).join(", ");
-  return ids.length > HOUSE_LIST ? `${shown}, ${F.andMore} ${ids.length - HOUSE_LIST} ${F.moreTail}` : shown;
+  return left > 0 ? `${shown}, ${F.andMore} ${left} ${F.moreTail}` : shown;
+}
+
+/**
+ * A house list as a recall's answer holds it: the first HOUSE_LIST names, a name that is not a lesson id cut as
+ * `ident` cuts it (the text then quotes the same characters), and how many more there are.
+ */
+export function heldNames(ids: string[]): { names: string[]; more: number } {
+  return { names: ids.slice(0, HOUSE_LIST).map((id) => (fitsShape(id, LESSON_ID) ? id : identCut(id))),
+    more: Math.max(0, ids.length - HOUSE_LIST) };
 }
 
 /** The measured figures: a horizon only when its change is a finite number, its benchmark figure only when it is one. */
@@ -295,12 +307,42 @@ export function fitsShape(value: unknown, shape: RegExp): value is string {
 }
 
 /**
- * A value from the store printed where a text's own words stand: itself when it fits its shape, else quoted, and cut
- * to IDENT_MAX characters first, so a line written by hand can neither pass for the text's own nor run it long.
+ * A value from the store printed where a text's own words stand: itself when it fits its shape, else quoted and cut
+ * first by `identCut` (at most IDENT_MAX characters, and IDENT_MAX_BYTES as written), so a line written by hand can
+ * neither pass for the text's own nor run it long.
  */
 export function ident(value: unknown, shape: RegExp): string {
   if (fitsShape(value, shape)) return value;
-  return quote(cutTo(typeof value === "string" ? value : String(JSON.stringify(value)), IDENT_MAX));
+  return quote(identCut(typeof value === "string" ? value : String(JSON.stringify(value))));
+}
+
+/** The bytes the cut mark takes as written. */
+const MARK_BYTES = Buffer.byteLength(F.cut);
+
+/**
+ * A value without its shape cut at a character's boundary so that it keeps at most IDENT_MAX characters and, quoted
+ * with its escapes and the mark, takes at most IDENT_MAX_BYTES; never inside an escape. A value cut once is cut the
+ * same again.
+ */
+export function identCut(s: string): string {
+  const kept: Array<{ bytes: number; units: number }> = [];
+  let at = 0;
+  let bytes = 2;                                                                   // the quotes
+  while (at < s.length && kept.length < IDENT_MAX) {
+    const ch = String.fromCodePoint(s.codePointAt(at)!);
+    const w = Buffer.byteLength(quote(ch)) - 2;
+    if (bytes + w > IDENT_MAX_BYTES) break;
+    kept.push({ bytes: w, units: ch.length });
+    bytes += w;
+    at += ch.length;
+  }
+  if (at >= s.length) return s;
+  while (bytes + MARK_BYTES > IDENT_MAX_BYTES) {
+    const last = kept.pop()!;
+    bytes -= last.bytes;
+    at -= last.units;
+  }
+  return `${s.slice(0, at)}${F.cut}`;
 }
 
 /** C0 and C1 controls but the newline (tab included), DEL, format characters (bidi, zero-width, BOM), separators. */

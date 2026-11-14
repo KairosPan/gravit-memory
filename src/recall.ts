@@ -14,7 +14,7 @@ import { matchCard, type Need } from "./match.js";
 import { waitingProposals } from "./proposals.js";
 import { mayBeDue, readOutcomes } from "./reconcile.js";
 import { cardRecord, figuresOf, occasionsOf, type CardRecord, type Figure } from "./records.js";
-import { fitRecall } from "./render.js";
+import { fitRecall, heldNames } from "./render.js";
 import { parseInput, recallInput } from "./schema.js";
 import type { Action, Card, Deps, LogFile, OutcomeLine, RecallLine, ResealLine, Whose } from "./types.js";
 
@@ -25,9 +25,14 @@ export interface AppliedCard { id: string; strength: Card["strength"]; says: Car
 export interface UntoldCard { id: string; needs: Need[] }
 export interface PastDecision { id: string; date: string; by: string; whose: Whose; action: Action; symbol?: string; thesis: string;
   wrong_if?: string; at_entry: boolean; backfilled: boolean; figures: Figure[] }
-/** `armed`: how many cards apply as armed (armed or changed since), none while the owner's chain is broken. */
+/**
+ * `armed`: how many cards apply as armed (armed or changed since), none while the owner's chain is broken.
+ * `cards_changed` and `cards_broken` hold at most the ten names the text shows, a name that is not a lesson id cut as
+ * the text cuts it; `cards_changed_more` and `cards_broken_more`, present only above zero, count the rest.
+ */
 export interface House { armed: number; may_be_due: number | "no price source"; proposals_waiting: number; cards_changed: string[];
-  cards_broken: string[]; owner_chain_broken: boolean; chains_broken: Array<{ file: LogFile; line: number }>; partial: LogFile[] }
+  cards_changed_more?: number; cards_broken: string[]; cards_broken_more?: number; owner_chain_broken: boolean;
+  chains_broken: Array<{ file: LogFile; line: number }>; partial: LogFile[] }
 export interface RecallAnswer { recall_id: string; applies: AppliedCard[]; applies_more: number; untold: UntoldCard[]; untold_more: number;
   same: PastDecision[]; like: PastDecision[]; house: House; text: string }
 
@@ -72,12 +77,13 @@ export async function recall(home: string, by: string, input: unknown, deps: Dep
     && q.considering.includes(v.line.action) && (v.line.tags ?? []).some((t) => tags.has(t))).slice(0, SHOW_LIKE).map(past);
 
   const house = await houseOf(home, nowMs, states);
+  const changed = new Set(states.cards.filter((c) => c.state === "changed").map((c) => c.id));
   const { answer, text } = fitRecall({
     recall_id: line.id,
     applies: applies.slice(0, SHOW_CARDS), applies_more: Math.max(0, applies.length - SHOW_CARDS),
     untold: untold.slice(0, SHOW_UNTOLD), untold_more: Math.max(0, untold.length - SHOW_UNTOLD),
     same, like, house,
-  });
+  }, changed);
   return { ...answer, text };
 }
 
@@ -112,12 +118,16 @@ async function houseOf(home: string, nowMs: number, states: Awaited<ReturnType<t
     if (log.partial) partial.push(file);
   }
 
+  const changed = heldNames(states.cards.filter((c) => c.state === "changed").map((c) => c.id));
+  const broken = heldNames(states.cards.filter((c) => c.state === "broken").map((c) => c.id));
   return {
     armed: states.applying.length,
     may_be_due: await mayBeDue(home, nowMs),
     proposals_waiting: (await waitingProposals(home)).length,
-    cards_changed: states.cards.filter((c) => c.state === "changed").map((c) => c.id),
-    cards_broken: states.cards.filter((c) => c.state === "broken").map((c) => c.id),
+    cards_changed: changed.names,
+    ...(changed.more > 0 ? { cards_changed_more: changed.more } : {}),
+    cards_broken: broken.names,
+    ...(broken.more > 0 ? { cards_broken_more: broken.more } : {}),
     owner_chain_broken: states.ownerChainBroken,
     chains_broken,
     partial,

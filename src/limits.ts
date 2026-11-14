@@ -12,6 +12,8 @@ export const STATUS_MAX_BYTES = 6000, REVIEW_MAX_BYTES = 8000, RECONCILE_MAX_BYT
 export const URL_SHOWN = 200, WHY_SHOWN = 160;
 /** The longest value from the store a text prints unquoted, as an identifier: an id, a name, a symbol, a time. */
 export const IDENT_MAX = 64;
+/** The most bytes a value from the store without its shape takes as a text writes it: quotes, escapes and the mark. */
+export const IDENT_MAX_BYTES = 100;
 /** How many measured decisions, ids, written lines, refusals and unmeasured decisions a list of theirs shows once it yields. */
 export const MEASURED_SHOWN = 10, IDS_SHOWN = 10, WRITTEN_SHOWN = 20, REFUSALS_SHOWN = 10, UNMEASURED_SHOWN = 10;
 /** The status's text: items of a list in a card's lines, a card's facts once they yield, ids of the cards not shown. */

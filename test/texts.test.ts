@@ -4,11 +4,12 @@ import { beforeEach, expect, test } from "vitest";
 import type { CardState } from "../src/cards.js";
 import { DEFAULT_CONFIG, FILES } from "../src/home.js";
 import { openMemory, type Memory, type ReconcileReport, type Review, type Status } from "../src/index.js";
-import { CARDS_NAMED, RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN, WHY_SHOWN } from "../src/limits.js";
+import { CARDS_NAMED, IDENT_MAX_BYTES, LESSON_ID, RECALL_MAX_BYTES, RECALL_STRUCT_MAX_BYTES, RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN, WHY_SHOWN } from "../src/limits.js";
 import { appendLine } from "../src/log.js";
 import { agentsStatus } from "../src/mcp.js";
 import type { PastDecision } from "../src/recall.js";
-import { decisions } from "../src/render.js";
+import { decisions, fitRecall, heldNames, ident, identCut } from "../src/render.js";
+import { ACTIONS } from "../src/schema.js";
 import { TEXT_FRAME, TEXT_HEADS, reconcileText, reviewText, statusText } from "../src/texts.js";
 import type { Card, LogFile, OutcomeLine, ProposalLine } from "../src/types.js";
 import { DAY, clock, tempHome, writeCard } from "./helpers.js";
@@ -669,3 +670,111 @@ test("the frame tells no one to trade", () => {
   for (const head of TEXT_HEADS) expect(TEXT_FRAME).toContain(head);
 });
 
+
+// ---- the recall's house: names bounded in bytes, lists bounded where the house is built
+
+/** n hand-written arm lines in owner.jsonl, each naming a 200-character lesson of ch; its chain does not hold. */
+async function armLines(n: number, ch: string): Promise<void> {
+  await appendFile(join(home, "owner.jsonl"), Array.from({ length: n }, (_, i) => `${JSON.stringify({ v: 1, kind: "owner",
+    id: `w-20260301-${String(i).padStart(8, "0")}`, seq: i + 1, prev: null, t: "2026-03-01T15:00:00.000Z", by: "owner",
+    act: "arm", lesson: `${String(i).padStart(2, "0")}${ch.repeat(198)}`, sha256: "0".repeat(64), sum: "0".repeat(64) })}\n`).join(""));
+}
+
+/** Whether a recall's answer holds both caps: its text, and JSON of the whole answer. */
+function holdsCaps(a: object & { text: string }): void {
+  expect(Buffer.byteLength(a.text)).toBeLessThanOrEqual(RECALL_MAX_BYTES);
+  expect(Buffer.byteLength(JSON.stringify(a))).toBeLessThan(RECALL_STRUCT_MAX_BYTES);
+}
+
+for (const [what, ch] of [["ASCII x", "x"], ["U+6DA8", HAN], ["U+E0041", "\u{E0041}"], ["U+0001", "\u0001"]] as const) {
+  test(`twelve hand-written arm lines naming 200-character lessons of ${what}: the recall holds both caps`, async () => {
+    await armLines(12, ch);
+    const a = await memory.recall("agent-one", ask);
+    holdsCaps(a);
+    expect(a.house.cards_broken).toHaveLength(10);
+    expect(a.house.cards_broken_more).toBe(2);
+    expect(a.text).toContain(", and 2 more");
+  });
+}
+
+test("thirty hand-written arm lines: both caps hold, each list holds ten names and counts the rest", async () => {
+  await armLines(30, "\u{E0041}");
+  const a = await memory.recall("agent-one", ask);
+  holdsCaps(a);
+  expect(a.house.cards_broken).toHaveLength(10);
+  expect(a.house.cards_broken_more).toBe(20);
+  expect(a.house).not.toHaveProperty("cards_changed_more");
+  for (const name of a.house.cards_broken) {
+    expect([...name].length).toBeLessThanOrEqual(65);
+    expect(a.text).toContain(`"${name.replaceAll("\u{E0041}", "\\u{e0041}")}"`);   // the text quotes the name held
+  }
+});
+
+test("twelve well-formed changed cards: the recall's text is as before, the structure holds ten names and the count", async () => {
+  for (let i = 1; i <= 12; i++) {
+    const id = `card-${String(i).padStart(2, "0")}`;
+    await writeCard(home, cardText(id, "Filler words."));
+    await memory.owner.arm(id);
+    await writeCard(home, cardText(id, "Filler words, edited."));
+  }
+  const a = await memory.recall("agent-one", { considering: ["sell"] });
+  expect(a.text).toBe("Lessons that apply:\nnone of the armed lessons applies to what was asked.\nLessons it cannot tell:\nnone.\n"
+    + "The same instrument before:\nnone.\nLike decisions:\nnone.\nThe house:\n- lessons armed: 12\n- outcomes: no price source is set.\n"
+    + "- proposals waiting for the owner: 0\n- changed since armed: card-01, card-02, card-03, card-04, card-05, card-06, card-07, "
+    + "card-08, card-09, card-10, and 2 more");                                   // the text on main for this store, byte for byte
+  expect(a.house.cards_changed).toEqual(Array.from({ length: 10 }, (_, i) => `card-${String(i + 1).padStart(2, "0")}`));
+  expect(a.house.cards_changed_more).toBe(2);
+  expect(a.house).not.toHaveProperty("cards_broken_more");
+});
+
+test("an applying card changed since armed is marked so though the house names it not", async () => {
+  for (let i = 1; i <= 12; i++) {
+    const id = `card-${String(i).padStart(2, "0")}`;
+    const text = cardText(id, "Filler words.").replace("strength: caveat", i === 12 ? "strength: red-line" : "strength: caveat");
+    await writeCard(home, text);
+    await memory.owner.arm(id);
+    await writeCard(home, text.replace("Filler words.", "Filler words, edited."));
+  }
+  const a = await memory.recall("agent-one", { considering: ["buy"] });
+  expect(a.house.cards_changed).not.toContain("card-12");
+  expect(a.text).toContain("- red line card-12, says dont on buy (changed since armed; applies as armed)");
+});
+
+test("the recall holds both caps on the worst input its files and schemas allow, oversized names in both house lists", () => {
+  const long = `x\n${wide(20_000)}`;                                                 // a value written by hand
+  const horizons = Array.from({ length: 250 }, (_, i) => i + 1);
+  const figures = horizons.map((k) => ({ k, change_pct: -123456.78, vs_benchmark_pct: -123456.78 }));
+  const cases = Array.from({ length: 1000 }, (_, i) => ({ decision: `${long}${i}`, date: long, symbol: long, action: "buy" as const, figures }));
+  const medians = Object.fromEntries(horizons.map((k) => [k, -123456.78]));
+  const record = { owner: { fired: 1e6, followed: 1e6, overridden: 1e6, seen: 1e6, backfilled: 1e6, no_decision: 1e6 },
+    agents: { followed: 1e6, overridden: 1e6, seen: 1e6 }, followed: cases, overridden: cases, backfilled: cases,
+    medians: { followed: medians, overridden: medians } };
+  const applies = Array.from({ length: 5 }, (_, i) => ({ id: `${"a".repeat(38)}-${i}`, strength: "red-line" as const, says: "dont" as const,
+    actions: [...ACTIONS], words: wide(200), record }));
+  const untold = Array.from({ length: 5 }, (_, i) => ({ id: `${"u".repeat(38)}-${i}`, needs: [{ what: "market" as const },
+    ...Array.from({ length: 20 }, (_, k) => ({ what: "fact" as const, fact: `${"f".repeat(37)}_${String(k).padStart(2, "0")}`, definition: wide(500) }))] }));
+  const past = (i: number): PastDecision => ({ id: `${long}${i}`, date: long, by: long, whose: "owner", action: "buy", symbol: long,
+    thesis: wide(160), wrong_if: wide(500), at_entry: true, backfilled: true, figures });
+  const many = Array.from({ length: 1000 }, (_, i) => `${i}${long}`);
+  const changed = heldNames(many);
+  const broken = heldNames(many);
+  const files = Object.values(FILES) as LogFile[];
+  const { answer, text } = fitRecall({ recall_id: "r-20260302-00000000", applies, applies_more: 1e6, untold, untold_more: 1e6,
+    same: [0, 1, 2].map(past), like: [3, 4, 5].map(past),
+    house: { armed: 1e6, may_be_due: 1e6, proposals_waiting: 1e6, cards_changed: changed.names, cards_changed_more: changed.more,
+      cards_broken: broken.names, cards_broken_more: broken.more, owner_chain_broken: false,
+      chains_broken: files.map((file) => ({ file, line: 1e6 })), partial: files } }, new Set([...applies.map((a) => a.id), ...many]));
+  holdsCaps({ ...answer, text });
+  expect(text).toContain("and 990 more");
+});
+
+test("a value without its shape is written in at most IDENT_MAX_BYTES, cut at a character, the same when cut again", () => {
+  expect(ident("x".repeat(200), LESSON_ID)).toBe(`"${"x".repeat(64)}…"`);                  // as before where bytes do not bind
+  for (const s of ["\u{E0041}".repeat(200), "\u0001".repeat(200), `${HAN}\u{E0041}x\n`.repeat(50), "\ud800".repeat(100)]) {
+    const written = ident(s, LESSON_ID);
+    expect(Buffer.byteLength(written)).toBeLessThanOrEqual(IDENT_MAX_BYTES);
+    expect(written.endsWith("…\"")).toBe(true);
+    expect(written).not.toMatch(/\\u(?![0-9a-f]{4}|\{[0-9a-f]+\})/);                       // never inside an escape
+    expect(identCut(identCut(s))).toBe(identCut(s));
+  }
+});

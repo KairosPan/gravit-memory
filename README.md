@@ -57,12 +57,14 @@ The name is a label, not a proof: see "What is protected" below.
 Every agent connected to a home reads the whole record: every decision, every lesson, whoever wrote it. Connect only
 agents you would show all of it to.
 
-A host that shows its model only a tool's text gets the content of each answer within the text's cap: when the content
-runs longer, the text says what it left out and how much. The status's, the review's and the reconcile's structures
-keep it all; a recall's structure is as short as its text. Text from the memory is quoted, a character a reader
-cannot see (a control, a format or bidi character, a line separator) is written as an escape, an id or a name is
-printed bare only when it has its shape, and a figure only when it is a number. None of this holds against a process
-that can write the home's files: see "What is protected, and what is not" below.
+A host that shows its model only a tool's text gets the content of each answer within the text's cap: when the
+content runs longer, the text says what it left out and how much. The status's, the review's and the reconcile's
+structures keep it all; a recall's structure is as short as its text, and its house names at most ten changed and ten
+broken cards, counting the rest in `cards_changed_more` and `cards_broken_more`. Text from the memory is quoted, a
+character a reader cannot see (a control, a format or bidi character, a line separator) is written as an escape, an
+id or a name is printed bare only when it has its shape (else quoted, within 100 bytes), and a figure only when it is
+a number. None of this holds against a process that can write the home's files: see "What is protected, and what is
+not" below.
 
 `gravit-memory mcp` serves the agent's door until its input closes. It also reads `GRAVIT_MEMORY_HOME`, or takes
 `--home <path>`.
