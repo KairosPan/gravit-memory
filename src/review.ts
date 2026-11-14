@@ -14,7 +14,7 @@ import { readLog } from "./log.js";
 import { weekdaysGone } from "./outcomes.js";
 import { waitingProposals } from "./proposals.js";
 import { pastOf, type PastDecision } from "./recall.js";
-import { lastReconcile, readOutcomes } from "./reconcile.js";
+import { lastReconcile, readOutcomes, sourceOf } from "./reconcile.js";
 import { cardRecord, occasionsOf, type CardRecord } from "./records.js";
 import type { Check, Config, Deps, LogFile, ProposalLine, RecallLine, ResealLine } from "./types.js";
 
@@ -97,9 +97,12 @@ export async function status(home: string): Promise<Status> {
   }
   const tags = [...counts].sort(([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0)).map(([tag, count]) => ({ tag, count }));
 
-  const last = await lastReconcile(home);
+  // The last run is the price source's only when it asked the source set now; else the source is never asked yet.
+  const read = await lastReconcile(home);
+  const { source, ...last } = read ?? {};
+  const ours = read !== undefined && source === sourceOf(cfg);
   return { home, version: 1, lines, partial, chains, cards: states.cards, facts, tags,
-    prices: { url: cfg.prices.url, ...(last !== undefined ? { last } : {}) } };
+    prices: { url: cfg.prices.url, ...(ours ? { last: last as NonNullable<Status["prices"]["last"]> } : {}) } };
 }
 
 /** since as epoch milliseconds: 0 when absent; E_INPUT when it is neither an ISO date nor an ISO time. */

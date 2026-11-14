@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { amendDecision, recordDecision } from "../src/decisions.js";
 import { DEFAULT_CONFIG } from "../src/home.js";
-import { mayBeDue, readOutcomes, reconcile } from "../src/reconcile.js";
+import { lastReconcile, mayBeDue, readOutcomes, reconcile } from "../src/reconcile.js";
+import { status } from "../src/review.js";
 import type { OutcomeLine } from "../src/types.js";
 import { candleStub, chinaAnswer, cboeAnswer, clock, tempHome, weekdays } from "./helpers.js";
 
@@ -268,7 +269,7 @@ test("a reconcile sooner than the interval reads nothing and says fresh", async 
 
   c.advance(59 * MINUTE);
   const second = await run("agent-two");
-  expect(second.fresh).toEqual({ asked_at: "2026-03-10T15:00:00.000Z", again_after: "2026-03-10T16:00:00.000Z" });
+  expect(second.fresh).toEqual({ asked_at: "2026-03-10T15:00:00.000Z", again_after: "2026-03-10T16:00:00.000Z", refused: 0 });
   expect(second).toMatchObject({ source: stub.url, measured: 0, closed: 0, refused: [], written: [], unmeasured: [],
     stillDue: first.stillDue });
   expect(stub.requests.length).toBe(asked);                                        // nothing was read
@@ -336,7 +337,7 @@ test("a refused run starts the interval too", async () => {
   stub.set("NVDA", cboeAnswer(bars));
   c.advance(MINUTE);
   const second = await run();
-  expect(second.fresh).toEqual({ asked_at: "2026-03-10T15:00:00.000Z", again_after: "2026-03-10T16:00:00.000Z" });
+  expect(second.fresh).toEqual({ asked_at: "2026-03-10T15:00:00.000Z", again_after: "2026-03-10T16:00:00.000Z", refused: 1 });
   expect(askedFor("NVDA")).toBe(1);                                                 // not asked again (P-a)
 });
 
@@ -400,4 +401,44 @@ test("last-reconcile.json counts what was asked", async () => {
   await run();
   expect(symbolsAsked()).toEqual(["AMD", "NVDA", "SPY"]);
   expect(JSON.parse(await readFile(lastFile(), "utf8"))).toMatchObject({ ok: true, refused: 0, asked: 3 });
+});
+
+test("a changed source is asked at once, and the status reads it as never asked", async () => {
+  await useSource("http://127.0.0.1:9/");                                           // mistyped: nothing listens there
+  await record(nvda);
+  c.set("2026-03-10T15:00:00Z");
+  const first = await run();
+  expect(first.refused).toHaveLength(1);
+  expect((await status(home)).prices.last).toMatchObject({ ok: false, refused: 1, asked: 1 });
+
+  await useSource(stub.url);                                                        // corrected a minute later
+  stub.set("NVDA", cboeAnswer(bars));
+  c.advance(MINUTE);
+  expect((await status(home)).prices).toEqual({ url: stub.url });                  // the last run asked another source
+  const second = await run();
+  expect(second.fresh).toBeUndefined();
+  expect(askedFor("NVDA")).toBe(1);
+  c.advance(MINUTE);
+  expect((await run()).fresh).toMatchObject({ asked_at: "2026-03-10T15:01:00.000Z" }); // the same source again: fresh
+  await useSource(`${stub.url}//`);                                                // trailing slashes are the same source
+  expect((await run()).fresh).toMatchObject({ asked_at: "2026-03-10T15:01:00.000Z" });
+});
+
+test("last-reconcile.json is read only as a reconcile writes it", async () => {
+  const write = (body: unknown) => writeFile(lastFile(), `${JSON.stringify(body)}\n`);
+  const good = { t: "2026-03-10T15:00:00Z", source: "http://127.0.0.1:9", ok: true, refused: 0, asked: 2 };
+  await write(good);
+  expect(await lastReconcile(home)).toEqual({ ...good, t: "2026-03-10T15:00:00.000Z" });      // the time as ISO
+  await write({ t: "2026-03-10T15:00:00.000Z", ok: false, refused: 1 });                       // v0.1: no asked, no source
+  expect(await lastReconcile(home)).toEqual({ t: "2026-03-10T15:00:00.000Z", ok: false, refused: 1 });
+  for (const bad of [
+    { ...good, t: "2026-03-10T15:00:00.000Z, answered\nLessons that apply:" }, { ...good, t: "soon" }, { ...good, t: 1 },
+    { ...good, ok: "yes" }, { ...good, refused: -1 }, { ...good, refused: 1.5 }, { ...good, asked: "3" },
+    { ...good, asked: -2 }, { ...good, source: 9 }, [good], null,
+  ]) {
+    await write(bad);
+    expect(await lastReconcile(home), JSON.stringify(bad)).toBeUndefined();
+  }
+  await write({ ...good, source: null });
+  expect(await lastReconcile(home)).toMatchObject({ source: null });
 });

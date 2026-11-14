@@ -4,7 +4,7 @@
 // reconcile for one symbol comes from one answer of the source. Whether the source last answered is kept in
 // last-reconcile.json (D-j), a plain file that is overwritten, not a ledger, with the number of requests the run made:
 // a run that asked the source, answered or refused, starts an interval (prices.every_minutes, 60 when absent) within
-// which the next run reads nothing and writes nothing, unless it is forced.
+// which the next run that would ask the same source reads nothing and writes nothing, unless it is forced.
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { checkAgent, readDecisions, type DecisionView } from "./decisions.js";
@@ -20,10 +20,10 @@ export interface Written { decision: string; symbol: string; what: "leg" | "hori
 
 export interface ReconcileReport { source: string | null; measured: number; closed: number; stillDue: number;
   refused: Array<{ market: string; symbol: string; why: string }>; unmeasured: Array<{ decision: string; why: "no symbol" | "no market" }>;
-  written: Written[]; fresh?: { asked_at: string; again_after: string } }
+  written: Written[]; fresh?: { asked_at: string; again_after: string; refused: number } }
 
-/** What last-reconcile.json holds: asked is absent in a file v0.1 wrote. */
-interface Last { t: string; ok: boolean; refused: number; asked?: number }
+/** What last-reconcile.json holds: asked is absent in a file v0.1 wrote; source is the run's, as `sourceOf` gives it. */
+export interface Last { t: string; ok: boolean; refused: number; asked?: number; source?: string | null }
 
 /** A reader of daily bars shaped as readDaily; the one reconcile passes counts each request it makes. */
 type Reader = (...args: Parameters<typeof readDaily>) => ReturnType<typeof readDaily>;
@@ -53,10 +53,10 @@ export async function reconcile(home: string, by: string, deps: Deps, opts?: { f
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const { views } = await readDecisions(home);
   const { pending, unmeasured } = sortOut(views, (await readOutcomes(home)).lines, cfg);
-  const source = cfg.prices.url === "" ? null : cfg.prices.url.replace(/\/+$/, "");
+  const source = sourceOf(cfg);
   const report: ReconcileReport = { source, measured: 0, closed: 0, stillDue: 0, refused: [], unmeasured, written: [] };
 
-  const fresh = source !== null && opts?.force !== true ? freshness(await lastReconcile(home), nowMs, cfg) : undefined;
+  const fresh = source !== null && opts?.force !== true ? freshness(await lastReconcile(home), source, nowMs, cfg) : undefined;
   if (fresh !== undefined) {
     report.stillDue = countDue(pending, nowMs, cfg.horizons);
     return { ...report, fresh };
@@ -86,7 +86,16 @@ export async function reconcile(home: string, by: string, deps: Deps, opts?: { f
   return report;
 }
 
-/** What last-reconcile.json says of the last reconcile, or undefined when there is none or it is not that. */
+/** The price source a run asks: config.json's prices.url without its trailing slashes, or null when none is set. */
+export function sourceOf(cfg: Config): string | null {
+  return cfg.prices.url === "" ? null : cfg.prices.url.replace(/\/+$/, "");
+}
+
+/**
+ * What last-reconcile.json says of the last reconcile, or undefined when there is none or it is not what a reconcile
+ * writes: t a time (given back as an ISO time), ok a boolean, refused and asked (absent in a file v0.1 wrote)
+ * whole numbers from 0, source a string, null or absent.
+ */
 export async function lastReconcile(home: string): Promise<Last | undefined> {
   let raw: unknown;
   try {
@@ -94,22 +103,29 @@ export async function lastReconcile(home: string): Promise<Last | undefined> {
   } catch {
     return undefined;
   }
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const { t, ok, refused, asked } = raw as Record<string, unknown>;
-  if (typeof t !== "string" || typeof ok !== "boolean" || typeof refused !== "number") return undefined;
-  return typeof asked === "number" ? { t, ok, refused, asked } : { t, ok, refused };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const { t, ok, refused, asked, source } = raw as Record<string, unknown>;
+  const count = (x: unknown): x is number => typeof x === "number" && Number.isInteger(x) && x >= 0;
+  const ms = typeof t === "string" ? Date.parse(t) : NaN;
+  if (Number.isNaN(ms) || typeof ok !== "boolean" || !count(refused)) return undefined;
+  if (asked !== undefined && !count(asked)) return undefined;
+  if (source !== undefined && source !== null && typeof source !== "string") return undefined;
+  return { t: new Date(ms).toISOString(), ok, refused, ...(asked !== undefined ? { asked } : {}),
+    ...(source !== undefined ? { source } : {}) };
 }
 
 /**
- * When the last run asked the source at least once and its time is no later than now and less than the interval
- * before it, that run's time and the time a run may ask again; else undefined. An interval of 0 holds nothing back.
+ * When the last run asked this same source at least once and its time is no later than now and less than the
+ * interval before it, that run's time, the time a run may ask again and what it was refused; else undefined. An
+ * interval of 0 holds nothing back.
  */
-function freshness(last: Last | undefined, nowMs: number, cfg: Config): ReconcileReport["fresh"] {
+function freshness(last: Last | undefined, source: string | null, nowMs: number, cfg: Config): ReconcileReport["fresh"] {
   const intervalMs = (cfg.prices.every_minutes ?? RECONCILE_EVERY_MINUTES) * 60_000;
-  if (intervalMs <= 0 || last === undefined || last.asked === undefined || last.asked < 1) return undefined;
+  if (intervalMs <= 0 || last === undefined || last.asked === undefined || last.asked < 1 || last.source !== source) return undefined;
   const askedMs = Date.parse(last.t);
-  if (Number.isNaN(askedMs) || nowMs - askedMs < 0 || nowMs - askedMs >= intervalMs) return undefined;
-  return { asked_at: new Date(askedMs).toISOString(), again_after: new Date(askedMs + intervalMs).toISOString() };
+  if (nowMs - askedMs < 0 || nowMs - askedMs >= intervalMs) return undefined;
+  return { asked_at: new Date(askedMs).toISOString(), again_after: new Date(askedMs + intervalMs).toISOString(),
+    refused: last.refused };
 }
 
 /** The entry of `written` for one line appended for p. */

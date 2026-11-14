@@ -275,7 +275,7 @@ test("memory_reconcile takes no force, and answers fresh within the interval", a
   expect(stub.requests).toHaveLength(1);
   c.advance(60_000);
   const second = await call(one, "memory_reconcile");
-  expect(second.fresh).toEqual({ asked_at: "2026-03-05T15:00:00.000Z", again_after: "2026-03-05T16:00:00.000Z" });
+  expect(second.fresh).toEqual({ asked_at: "2026-03-05T15:00:00.000Z", again_after: "2026-03-05T16:00:00.000Z", refused: 1 });
   expect(stub.requests).toHaveLength(1);
 });
 

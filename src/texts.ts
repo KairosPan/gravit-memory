@@ -10,10 +10,10 @@
 // is its id, its state and its fault, whatever Status it is handed. A changed card applies as armed, and its content
 // is the armed copy's (src/cards.ts parses the armed bytes). An applying card's words are never cut; when the cap
 // forces it, whole cards go from the end, with their facts, and are counted.
-import { LESSON_ID, RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES } from "./limits.js";
+import { LESSON_ID, RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN } from "./limits.js";
 import type { CardState } from "./cards.js";
 import type { ReconcileReport, Written } from "./reconcile.js";
-import { decisions, pct, quote, short } from "./render.js";
+import { cutTo, decisions, pct, quote, short } from "./render.js";
 import type { Review, Status } from "./review.js";
 import type { Card, Check } from "./types.js";
 
@@ -86,6 +86,10 @@ const T = {
   askedAt: "The price source was asked at",
   againAfter: "it will be asked again after",
   nothingDone: "Nothing was read or written this time.",
+  refusedThenOne: "symbol was refused by the source then.",
+  refusedThenMany: "symbols were refused by the source then.",
+  dueOne: "decision may have something due.",
+  dueMany: "decisions may have something due.",
   measured: "Measured",
   closedCount: "closed",
   stillDue: "still due",
@@ -128,6 +132,11 @@ function firstFit(texts: Iterable<string>, max: number): string {
     if (Buffer.byteLength(text) <= max) return text;
   }
   return last;
+}
+
+/** A number and the frame's words for it: the one for 1, the other for any other number. */
+function count(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** The first cap items as lines, then how many more there are, in the words of tail. */
@@ -200,9 +209,9 @@ function renderStatus(v: StatusView, shape: StatusShape): string {
 }
 
 /**
- * The price source and its last asking: with no source, that none is set and nothing more; else when it was last
- * asked and whether it answered, or that the last run asked it nothing (asked 0). A file v0.1 wrote has no asked,
- * and is read as a run that asked.
+ * The price source and its last asking: with no source, that none is set and nothing more; else the source's URL, cut
+ * to URL_SHOWN characters, and when it was last asked and whether it answered, or that the last run asked it nothing
+ * (asked 0). A file v0.1 wrote has no asked, and is read as a run that asked.
  */
 function prices(p: Status["prices"]): string[] {
   if (p.url === "") return [`- ${T.noSource}`];
@@ -210,7 +219,7 @@ function prices(p: Status["prices"]): string[] {
   const when = last === undefined ? T.neverAsked
     : last.asked === 0 ? `${T.lastRunAt} ${last.t}, ${T.askedNothing}`
     : `${T.lastAsked} ${last.t}, ${last.ok ? T.answered : `${T.refusals} ${last.refused}`}`;
-  return [`- ${T.source} ${quote(p.url)}`, `- ${when}`];
+  return [`- ${T.source} ${quote(cutTo(p.url, URL_SHOWN))}`, `- ${when}`];
 }
 
 /** The opening line: how many lessons, how many apply, each chain, the partial last lines. */
@@ -309,8 +318,16 @@ interface ReconcileShape { written: number; refused: number; unmeasured: number 
 /** The reconcile's text, at most RECONCILE_MAX_BYTES. */
 export function reconcileText(r: ReconcileReport): string {
   if (r.source === null) return T.noSourceRun;
-  if (r.fresh !== undefined) return `${T.askedAt} ${r.fresh.asked_at}; ${T.againAfter} ${r.fresh.again_after}. ${T.nothingDone}`;
+  if (r.fresh !== undefined) return freshText(r, r.fresh);
   return firstFit(reconcileSteps(r), RECONCILE_MAX_BYTES);
+}
+
+/** A fresh run's text: when the source was asked and may be again, what it refused then, and what may be due. */
+function freshText(r: ReconcileReport, fresh: NonNullable<ReconcileReport["fresh"]>): string {
+  const parts = [`${T.askedAt} ${fresh.asked_at}; ${T.againAfter} ${fresh.again_after}. ${T.nothingDone}`];
+  if (fresh.refused > 0) parts.push(count(fresh.refused, T.refusedThenOne, T.refusedThenMany));
+  if (r.stillDue > 0) parts.push(count(r.stillDue, T.dueOne, T.dueMany));
+  return parts.join(" ");
 }
 
 /** Its texts in yielding order: written lines beyond 20 counted, refusals beyond 10 counted, then every list shorter. */

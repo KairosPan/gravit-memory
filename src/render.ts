@@ -251,8 +251,13 @@ export function pct(x: number): string {
 
 /** Store text cut short with the mark, when cut is set and it is longer than CUT_TO characters. */
 export function short(s: string, cut: boolean): string {
+  return cut ? cutTo(s, CUT_TO) : s;
+}
+
+/** Store text cut to its first n characters and the mark, when it is longer than n. */
+export function cutTo(s: string, n: number): string {
   const chars = [...s];
-  return cut && chars.length > CUT_TO ? `${chars.slice(0, CUT_TO).join("")}${F.cut}` : s;
+  return chars.length > n ? `${chars.slice(0, n).join("")}${F.cut}` : s;
 }
 
 /**
