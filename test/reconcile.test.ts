@@ -105,7 +105,7 @@ test("an A share past the range is closed, and not asked again", async () => {
   c.set("2026-03-11T12:00:00Z");
   expect(await run()).toMatchObject({ measured: 0, closed: 1, stillDue: 0 });
   expect(await outcomes()).toEqual([expect.objectContaining({ what: "closed", reason: "not measurable from this source" })]);
-  expect(symbolsAsked()).toEqual(["600000"]);                                    // CN names no benchmark
+  expect(symbolsAsked()).toEqual(["600000"]);                                       // CN names no benchmark
   await run();
   await run();
   expect(stub.requests).toHaveLength(1);
@@ -414,13 +414,13 @@ test("a changed source is asked at once, and the status reads it as never asked"
   await useSource(stub.url);                                                        // corrected a minute later
   stub.set("NVDA", cboeAnswer(bars));
   c.advance(MINUTE);
-  expect((await status(home)).prices).toEqual({ url: stub.url });                  // the last run asked another source
+  expect((await status(home)).prices).toEqual({ url: stub.url });                   // the last run asked another source
   const second = await run();
   expect(second.fresh).toBeUndefined();
   expect(askedFor("NVDA")).toBe(1);
   c.advance(MINUTE);
   expect((await run()).fresh).toMatchObject({ asked_at: "2026-03-10T15:01:00.000Z" }); // the same source again: fresh
-  await useSource(`${stub.url}//`);                                                // trailing slashes are the same source
+  await useSource(`${stub.url}//`);                                                 // trailing slashes are the same source
   expect((await run()).fresh).toMatchObject({ asked_at: "2026-03-10T15:01:00.000Z" });
 });
 
@@ -428,8 +428,8 @@ test("last-reconcile.json is read only as a reconcile writes it", async () => {
   const write = (body: unknown) => writeFile(lastFile(), `${JSON.stringify(body)}\n`);
   const good = { t: "2026-03-10T15:00:00Z", source: "http://127.0.0.1:9", ok: true, refused: 0, asked: 2 };
   await write(good);
-  expect(await lastReconcile(home)).toEqual({ ...good, t: "2026-03-10T15:00:00.000Z" });      // the time as ISO
-  await write({ t: "2026-03-10T15:00:00.000Z", ok: false, refused: 1 });                       // v0.1: no asked, no source
+  expect(await lastReconcile(home)).toEqual({ ...good, t: "2026-03-10T15:00:00.000Z" }); // the time as ISO
+  await write({ t: "2026-03-10T15:00:00.000Z", ok: false, refused: 1 });            // v0.1: no asked, no source
   expect(await lastReconcile(home)).toEqual({ t: "2026-03-10T15:00:00.000Z", ok: false, refused: 1 });
   for (const bad of [
     { ...good, t: "2026-03-10T15:00:00.000Z, answered\nLessons that apply:" }, { ...good, t: "soon" }, { ...good, t: 1 },

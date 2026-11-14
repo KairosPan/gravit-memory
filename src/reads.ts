@@ -2,6 +2,8 @@
 //
 // They are reads, not tools: the agent's door has none for them. Like the status, they answer when a log's chain is
 // broken or its last line is partial; a fault in one card's files is that card's, never the whole read's.
+// The card states, an armed copy and a working file are three reads, not one moment: what a host shows may change
+// between them, and owner.arm(id, expect) with the hash it showed is what refuses to arm an edit made since.
 import { armedPath, cardStates, lessonPath, parseCard, readCardFile, type CardState } from "./cards.js";
 import { readDecisions, type DecisionView } from "./decisions.js";
 import { MemoryError } from "./errors.js";
@@ -68,7 +70,7 @@ export async function listDecisions(home: string, filter: unknown): Promise<Deci
     if (at < 0) throw new MemoryError("E_NOT_FOUND", `decision ${f.before} is not in the memory.`);
     older = views.slice(0, at);
   }
-  const matching = (f.symbol === undefined ? older : older.filter((v) => v.line.symbol === f.symbol)).reverse();
+  const matching = [...(f.symbol === undefined ? older : older.filter((v) => v.line.symbol === f.symbol))].reverse();
   const limit = f.limit ?? DECISIONS_LIMIT_DEFAULT;
   const shown = matching.slice(0, limit);
   const cfg = await readConfig(home);

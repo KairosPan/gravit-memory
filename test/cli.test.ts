@@ -372,9 +372,10 @@ test("reconcile holds back within the interval, and --force reads at once", asyn
   expect(asked).toBeGreaterThan(0);
 
   c.advance(60_000);
-  const fresh = fakeIo();
+  const fresh = fakeIo({ columns: 80 });
   expect(await runCli(["reconcile", "--home", home], fresh, live)).toBe(0);
-  expect(fresh.printed().split("\n")).toHaveLength(1);
+  expect(fresh.printed().split("\n")).toHaveLength(2);
+  for (const line of fresh.printed().split("\n")) expect(line.length).toBeLessThan(80);
   expect(fresh.printed()).toContain("Fresh");
   expect(fresh.printed()).toContain("2026-03-05T15:00:00.000Z");
   expect(fresh.printed()).toContain("2026-03-05T16:00:00.000Z");
@@ -389,6 +390,16 @@ test("reconcile holds back within the interval, and --force reads at once", asyn
   const status = fakeIo();
   expect(await runCli(["status", "--force", "--home", home], status)).toBe(2);
   expect(status.errors()).toContain("unknown option --force");
+});
+
+test("status says of a last run that asked the source nothing", async () => {
+  const config = { ...DEFAULT_CONFIG, prices: { ...DEFAULT_CONFIG.prices, url: "http://127.0.0.1:9" } };
+  await writeFile(join(home, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+  expect(await runCli(["reconcile", "--home", home], fakeIo(), deps)).toBe(0);    // no decision: nothing to ask
+  const io = fakeIo();
+  expect(await runCli(["status", "--home", home], io)).toBe(0);
+  expect(io.printed()).toContain("  last reconcile 2026-03-02T15:00:00.000Z, asked the source nothing");
+  expect(io.printed()).not.toContain("refused");
 });
 
 test("mcp without --as", async () => {

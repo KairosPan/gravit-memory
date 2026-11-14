@@ -233,7 +233,7 @@ test("reviewed", async () => {
 });
 
 test("a symbol and a market are codes of their own characters", async () => {
-  for (const symbol of ["NVDA", "BRK.B", "600519", "000001", "ES=F", "BF-B", "X_Y^Z", "A".repeat(32)]) {
+  for (const symbol of ["NVDA", "BRK.B", "brk.b", "600519", "000001", "ES=F", "BF-B", "X_Y^Z", "A".repeat(32)]) {
     expect((await record({ ...base, symbol })).symbol, symbol).toBe(symbol);
   }
   for (const symbol of ["^GSPC", ".X", "-X", "A B", "A/B", "A".repeat(33), "NVDA\n", "涨"]) {

@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import type { Code } from "../src/errors.js";
@@ -237,6 +237,24 @@ test("by symbol, by limit, and before an id", async () => {
   const all = await memory.decisions({ limit: 4 });
   expect(all.items).toHaveLength(4);
   expect(all.more).toBe(false);
+});
+
+test("both reads answer on a decisions file with a broken chain and a partial last line", async () => {
+  await writeCard(home);
+  await memory.owner.arm(ID);
+  const one = await memory.record("agent-one", nvda);
+  const two = await memory.record("agent-one", { ...nvda, symbol: "AMD", thesis: "Another filler thesis." });
+  const path = join(home, "decisions.jsonl");
+  await writeFile(path, (await readFile(path, "utf8")).replace("Data-centre orders", "Data-centre ORDERS"));   // breaks line 1
+  await appendFile(path, `{"v":1,"kind":"decision","id":"d-2026`);                                      // a partial last line
+
+  const { items, more } = await memory.decisions();
+  expect(more).toBe(false);
+  expect(items.map((i) => i.view.line.id)).toEqual([two.id, one.id]);
+  expect((await memory.decisions({ before: two.id })).items.map((i) => i.view.line.id)).toEqual([one.id]);
+  const { lessons } = await memory.lessons();
+  expect(lessons).toMatchObject([{ id: ID, state: "armed", file: { text: STAND_IN_CARD } }]);
+  expect(lessons[0]!.record).not.toBeNull();
 });
 
 test("a void decision is listed and marked", async () => {

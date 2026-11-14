@@ -457,8 +457,8 @@ async function reconcile(io: Door, memory: Memory, force: boolean): Promise<numb
   const r = await memory.reconcile(RECONCILER, { force });
   if (r.source === null) { io.out("No price source is set: nothing was measured. Set prices.url in config.json."); return 0; }
   if (r.fresh) {
-    io.out(`Fresh: the price source was asked at ${ident(r.fresh.asked_at, ISO_TIME)}; nothing is read again before `
-      + `${ident(r.fresh.again_after, ISO_TIME)}, unless you run reconcile --force.`);
+    io.out(`Fresh: the price source was asked at ${ident(r.fresh.asked_at, ISO_TIME)}.`);
+    io.out(`Asked again after ${ident(r.fresh.again_after, ISO_TIME)}, or now with reconcile --force.`);
     return 0;
   }
   io.out(`Measured ${r.measured}, closed ${r.closed}, still due ${r.stillDue}, refused ${r.refused.length}, unmeasured ${r.unmeasured.length}.`);
@@ -611,7 +611,9 @@ function statusLines(s: Status): string[] {
   } else {
     const last = s.prices.last;
     out.push("Prices: the price source is", fence(s.prices.url),
-      last ? `  last reconcile ${ident(last.t, ISO_TIME)}, ${last.ok ? "answered" : "did not answer"}, ${last.refused} refused` : "  never reconciled");
+      !last ? "  never reconciled"
+        : last.asked === 0 ? `  last reconcile ${ident(last.t, ISO_TIME)}, asked the source nothing`
+        : `  last reconcile ${ident(last.t, ISO_TIME)}, ${last.ok ? "answered" : "did not answer"}, ${last.refused} refused`);
   }
   return out;
 }

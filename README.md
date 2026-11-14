@@ -57,7 +57,10 @@ The name is a label, not a proof: see "What is protected" below.
 Every agent connected to a home reads the whole record: every decision, every lesson, whoever wrote it. Connect only
 agents you would show all of it to.
 
-A host that shows its model only a tool's text loses nothing: each tool's text carries the content of its answer.
+A host that shows its model only a tool's text gets the content of each answer within the text's cap: when the content
+runs longer, the text says what it left out and how much (the structure keeps it all). Text from the memory is quoted,
+and a character a reader cannot see (a control, a format or bidi character, a line separator) is written as an escape,
+so nothing stored can pass for the text's own words.
 
 `gravit-memory mcp` serves the agent's door until its input closes. It also reads `GRAVIT_MEMORY_HOME`, or takes
 `--home <path>`.
@@ -68,11 +71,13 @@ The server gives the agent short instructions of its own on when to call each to
 
 - `memory_status` — which facts the owner's lessons need and how each is defined, and the state of the memory.
   A card that applies is given as armed; any other is given by its id, state and fault, never its words. Its text
-  carries the same content, within 6,000 bytes: the lessons that apply in the owner's words, each fact with its
-  definition and checks, the other lessons, the tags in use and the price source.
+  carries the content within 6,000 bytes: the lessons that apply in the owner's words, each fact with its definition
+  and checks, the other lessons, the tags in use and the price source. An applying lesson's words are never cut; when
+  the text must yield, lessons not shown are named and counted, caveats before red lines.
 - `memory_reconcile` — measures registered decisions against the price source's daily closes; called when work
-  starts. Its text, within 2,000 bytes, says each line it wrote, each refusal and why, or when the source was asked
-  and when it will be asked again.
+  starts. Its text, within 2,000 bytes, says the lines it wrote, the refusals and why, or, within the interval, when
+  the source was asked, when it will be asked again, what it refused then and how many decisions may have something
+  due.
 - `memory_recall` — called before recommending, placing or advising on a trade, or advising to hold or stay out:
   given the actions that might be taken and the facts at hand, it answers the lessons that apply with their record,
   the lessons it cannot tell without a missing fact, and past decisions on the same name.
@@ -83,7 +88,8 @@ The server gives the agent short instructions of its own on when to call each to
 - `memory_propose` — proposes a new lesson, a change to one, or its retirement, with a reason and evidence. It waits
   for the owner.
 - `memory_review` — the review's material: decisions measured since a date, each lesson's record, decisions past
-  their horizon, proposals waiting. Its text carries the same material, within 8,000 bytes.
+  their horizon, proposals waiting. Its text carries the material within 8,000 bytes, keeping the newest measured
+  decisions and counting the earlier ones when it must yield; a proposal's card is in the structure, not the text.
 
 No tool arms, changes or retires a lesson. A decision is never changed either: what follows it is an amendment, a
 new line naming it.
@@ -217,18 +223,20 @@ redirect. The source must answer status 200 with JSON:
 - `today` — optional: `{ "t": … }` marking the last bar as provisional, which is not measured.
 
 A refusal is `{ "ok": false, "refusal": { "message": "…" } }` (or `{ "ok": false, "error": "…" }`); the symbol is
-reported refused and asked again at the next reconcile. Anything else is reported as not an answer of daily bars.
+reported refused and asked again at the next reconcile after the interval (below). Anything else is reported as
+not an answer of daily bars.
 
 When the bars a source gives no longer reach a decision's day 0, the decision is closed as "not measurable from
 this source" and is not asked again. An A share (`venue: "china"`) is named by its six digits, as `600000`, and is
 read a year at a time, about 250 daily bars, so it is measurable for about a year after its decision; a decision
 reconciled later than that is closed so.
 
-A reconcile is not run sooner than an interval after the last one that asked the source: `prices.every_minutes` in
-`config.json`, a whole number of minutes from 0 to 1,440, 60 when the key is absent, and 0 for no interval. A run
-that asked the source counts whether it was answered or refused; a run that asked nothing starts no interval. Within
-the interval a reconcile reads nothing, writes nothing and answers `fresh`, with the time the source was asked and the
-time it may be asked again. `gravit-memory reconcile --force` reads at once; the agent's tool has no such choice.
+A reconcile is not run sooner than an interval after the last one that asked the same source: `prices.every_minutes`
+in `config.json`, a whole number of minutes from 0 to 1,440, 60 when the key is absent, and 0 for no interval. A run
+that asked the source counts whether it was answered or refused; a run that asked nothing starts no interval, and a
+changed `url` is asked at once. Within the interval a reconcile reads nothing, writes nothing and answers `fresh`,
+with the time the source was asked, the time it may be asked again and what it refused then.
+`gravit-memory reconcile --force` reads at once; the agent's tool has no such choice.
 
 ## For a host
 
@@ -236,10 +244,15 @@ An application that embeds the package opens the memory with `openMemory(home)` 
 reads, which no agent's tool reaches:
 
 - `lessons()`: every lesson card by id, with its state, the armed copy's text and SHA-256, the working file's text
-  and SHA-256 (or why it does not parse), and, for a card that applies, its record.
+  and SHA-256 (with why it is not a card, when it is not), and, for a card that applies, its record. A card file is
+  UTF-8 text: one that is not, or that cannot be read (a directory named like a card), is that card's fault, refused
+  as a working file and broken as an armed copy; no read throws for it.
 - `decisions({ symbol, before, limit })`: the decisions newest first, each with its amendments and its figures;
   `before` names a decision's id and pages back from it, `limit` is 1 to 200 (50 when absent), and `more` says
   whether older ones were left out. A void decision is listed and marked.
+
+A host's own reconcile may skip the interval: `memory.reconcile(by, { force: true })` reads at once, as
+`gravit-memory reconcile --force` does.
 
 The owner's acts are `Memory.owner`. `owner.arm(lesson, expect)` takes as `expect` the SHA-256 of the bytes the owner
 was shown (a read's `file.sha256`), so that a file changed meanwhile is not armed. An owner's act must come from the
@@ -275,7 +288,7 @@ All of the memory is the home, `~/.gravit-memory` unless `GRAVIT_MEMORY_HOME` or
 | `owner.jsonl` | the owner's acts: arming, retiring, discarding, answering proposals |
 | `lessons/` | the lesson cards as the owner writes them |
 | `armed/` | each card as it was armed, byte for byte |
-| `last-reconcile.json` | whether the price source answered last time |
+| `last-reconcile.json` | when the price source was last asked, which source and whether it answered; it starts the interval |
 
 Every `.jsonl` file is only appended to. On macOS and Linux the home is readable by its user alone.
 
