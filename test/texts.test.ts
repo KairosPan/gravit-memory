@@ -11,7 +11,7 @@ import type { PastDecision } from "../src/recall.js";
 import { decisions, fitRecall, heldNames, ident, identCut } from "../src/render.js";
 import { ACTIONS } from "../src/schema.js";
 import { TEXT_FRAME, TEXT_HEADS, reconcileText, reviewText, statusText } from "../src/texts.js";
-import type { Card, LogFile, OutcomeLine, ProposalLine } from "../src/types.js";
+import type { Card, LogFile, OutcomeLine, OwnerLine, ProposalLine } from "../src/types.js";
 import { DAY, clock, tempHome, writeCard } from "./helpers.js";
 
 const ID = "no-chasing-after-a-run";
@@ -777,4 +777,21 @@ test("a value without its shape is written in at most IDENT_MAX_BYTES, cut at a 
     expect(written).not.toMatch(/\\u(?![0-9a-f]{4}|\{[0-9a-f]+\})/);                       // never inside an escape
     expect(identCut(identCut(s))).toBe(identCut(s));
   }
+});
+
+test("an owner's arm line whose lesson is not a string: every read answers, the card armed before still applies", async () => {
+  await writeCard(home, cardText("card-a", "Filler words."));
+  await memory.owner.arm("card-a");
+  for (const lesson of [123, { a: 1 }, null, undefined]) {
+    await appendLine<OwnerLine>(home, "owner.jsonl", "owner", c.now(), "w", { kind: "owner", act: "arm",
+      ...(lesson !== undefined ? { lesson: lesson as unknown as string } : {}), sha256: "0".repeat(64) } as OwnerLine);
+  }
+  const a = await memory.recall("agent-one", { considering: ["buy"] });
+  holdsCaps(a);
+  expect(a.applies.map((x) => x.id)).toEqual(["card-a"]);
+  expect(a.house.cards_broken).toHaveLength(4);
+  for (const name of a.house.cards_broken) expect(typeof name).toBe("string");
+  expect((await memory.status()).cards.length).toBe(5);
+  expect((await memory.lessons()).lessons.length).toBe(5);
+  expect(reviewText(await memory.review())).toContain("Lessons:");
 });

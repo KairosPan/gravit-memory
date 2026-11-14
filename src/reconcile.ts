@@ -13,6 +13,7 @@ import { appendLine, readLog, type Fields, type LogRead } from "./log.js";
 import { measure, targetDate, weekdaysGone, type Series } from "./outcomes.js";
 import { RECONCILE_EVERY_MINUTES } from "./limits.js";
 import { LATEST_BARS, LONGER_BARS, readDaily } from "./prices.js";
+import { isMeasurement } from "./records.js";
 import type { Config, Deps, MarketConfig, OutcomeBody, OutcomeLine, ResealLine } from "./types.js";
 
 /** One line this run appended: a horizon's k and change_pct, a leg's leg_pct (null when not taken), a closed line neither. */
@@ -214,7 +215,7 @@ function sortOut(views: DecisionView[], outcomes: OutcomeLine[], cfg: Config): {
     if (symbol === undefined) { unmeasured.push({ decision: id, why: "no symbol" }); continue; }
     const m = market === undefined ? undefined : cfg.prices.markets[market];
     if (market === undefined || m === undefined) { unmeasured.push({ decision: id, why: "no market" }); continue; }
-    const have = byDecision.get(id) ?? [];
+    const have = (byDecision.get(id) ?? []).filter(isMeasurement);       // a line that is no measurement holds no slot
     if (have.some((l) => l.what === "closed")) continue;
     const legDue = view.line.price !== undefined && !have.some((l) => l.what === "leg");
     if (!legDue && unmeasuredHorizons(have, cfg.horizons).length === 0) continue;

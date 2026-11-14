@@ -46,8 +46,8 @@ export function occasionsOf(recalls: RecallLine[]): Occasion[] {
 /**
  * One figure per horizon, in order, from the first horizon line for the decision and k and its first leg line: the
  * change compounds the leg when one was taken, else it is the horizon line's own. A line whose numbers are not finite
- * numbers (one written by hand) is no measurement: a horizon line whose change is not one, or a leg line whose leg is
- * neither null nor one, is passed over as if it were not there; a benchmark figure that is not one is null.
+ * numbers (one written by hand) is no measurement (`isMeasurement`): it is passed over as if it were not there, so the
+ * reconcile measures it again and the first well-formed line counts; a benchmark figure that is not one is null.
  */
 export function figuresOf(decision: string, outcomes: OutcomeLine[], horizons: number[]): Figure[] {
   let leg: number | null = null;
@@ -55,10 +55,11 @@ export function figuresOf(decision: string, outcomes: OutcomeLine[], horizons: n
   let legSeen = false;
   for (const o of outcomes) {
     if (o.kind !== "outcome" || o.decision !== decision) continue;
-    if (o.what === "leg" && !legSeen && (o.leg_pct === null || isFigure(o.leg_pct))) {
+    if (!isMeasurement(o)) continue;
+    if (o.what === "leg" && !legSeen) {
       legSeen = true;
       leg = o.leg_pct;
-    } else if (o.what === "horizon" && !byK.has(o.k) && isFigure(o.change_pct)) {
+    } else if (o.what === "horizon" && !byK.has(o.k)) {
       byK.set(o.k, { change_pct: o.change_pct, vs_benchmark_pct: isFigure(o.vs_benchmark_pct) ? o.vs_benchmark_pct : null });
     }
   }
@@ -71,8 +72,18 @@ export function figuresOf(decision: string, outcomes: OutcomeLine[], horizons: n
 }
 
 /** Whether a value read from a line is a finite number. */
-function isFigure(x: unknown): x is number {
+export function isFigure(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
+}
+
+/**
+ * Whether an outcome line is a measurement, for the reads and the reconcile alike: a horizon line only when its change
+ * is a finite number, a leg line only when its leg is null (not taken) or a finite number; a closed line always.
+ */
+export function isMeasurement(o: OutcomeLine): boolean {
+  if (o.what === "horizon") return isFigure(o.change_pct);
+  if (o.what === "leg") return o.leg_pct === null || isFigure(o.leg_pct);
+  return true;
 }
 
 /**

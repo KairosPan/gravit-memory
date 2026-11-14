@@ -259,11 +259,19 @@ function names(ids: string[], more?: number): string {
 
 /**
  * A house list as a recall's answer holds it: the first HOUSE_LIST names, a name that is not a lesson id cut as
- * `ident` cuts it (the text then quotes the same characters), and how many more there are.
+ * `ident` cuts it (the text then quotes the same characters), and how many more there are. A name written by hand
+ * that is not a string is held as the string `ident` would write for it: its JSON text, or "undefined".
  */
-export function heldNames(ids: string[]): { names: string[]; more: number } {
-  return { names: ids.slice(0, HOUSE_LIST).map((id) => (fitsShape(id, LESSON_ID) ? id : identCut(id))),
-    more: Math.max(0, ids.length - HOUSE_LIST) };
+export function heldNames(ids: readonly unknown[]): { names: string[]; more: number } {
+  return { names: ids.slice(0, HOUSE_LIST).map((id) => {
+    const text = identText(id);
+    return fitsShape(text, LESSON_ID) ? text : identCut(text);
+  }), more: Math.max(0, ids.length - HOUSE_LIST) };
+}
+
+/** A value from the store as a string: itself when it is one, else its JSON text, or "undefined". */
+function identText(value: unknown): string {
+  return typeof value === "string" ? value : String(JSON.stringify(value));
 }
 
 /** The measured figures: a horizon only when its change is a finite number, its benchmark figure only when it is one. */
@@ -313,7 +321,7 @@ export function fitsShape(value: unknown, shape: RegExp): value is string {
  */
 export function ident(value: unknown, shape: RegExp): string {
   if (fitsShape(value, shape)) return value;
-  return quote(identCut(typeof value === "string" ? value : String(JSON.stringify(value))));
+  return quote(identCut(identText(value)));
 }
 
 /** The bytes the cut mark takes as written. */

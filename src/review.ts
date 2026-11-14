@@ -15,7 +15,7 @@ import { weekdaysGone } from "./outcomes.js";
 import { waitingProposals } from "./proposals.js";
 import { pastOf, type PastDecision } from "./recall.js";
 import { lastReconcile, readOutcomes, sourceOf } from "./reconcile.js";
-import { cardRecord, occasionsOf, type CardRecord } from "./records.js";
+import { cardRecord, isMeasurement, occasionsOf, type CardRecord } from "./records.js";
 import type { Check, Config, Deps, LogFile, ProposalLine, RecallLine, ResealLine } from "./types.js";
 
 export interface Review { since: string; measured: Array<PastDecision>; cards: Array<{ id: string; record: CardRecord; quiet: boolean; overridden_often: boolean }>;
@@ -44,7 +44,7 @@ export async function review(home: string, since: string | undefined, deps: Deps
   const live = views.filter((v) => !v.void);
   const after = (t: string) => Date.parse(t) >= sinceMs;
 
-  const measuredIds = new Set(outcomes.flatMap((o) => (o.what === "horizon" && after(o.t) ? [o.decision] : [])));
+  const measuredIds = new Set(outcomes.flatMap((o) => (o.what === "horizon" && isMeasurement(o) && after(o.t) ? [o.decision] : [])));
   const cards = states.cards.flatMap((s) => {
     if (s.card === undefined) return [];
     const record = cardRecord(s.card, occasions, views, outcomes, cfg.horizons, nowMs);

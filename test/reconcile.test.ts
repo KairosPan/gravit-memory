@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { amendDecision, recordDecision } from "../src/decisions.js";
 import { DEFAULT_CONFIG } from "../src/home.js";
+import { openMemory } from "../src/index.js";
+import { appendLine } from "../src/log.js";
 import { lastReconcile, mayBeDue, readOutcomes, reconcile } from "../src/reconcile.js";
 import { status } from "../src/review.js";
 import type { OutcomeLine } from "../src/types.js";
@@ -441,4 +443,27 @@ test("last-reconcile.json is read only as a reconcile writes it", async () => {
   }
   await write({ ...good, source: null });
   expect(await lastReconcile(home)).toMatchObject({ source: null });
+});
+
+test("a horizon or leg line written by hand that is no measurement is measured again, and the reads show the new line", async () => {
+  await useSource(stub.url, 0);
+  const d = await record({ ...nvda, price: 101 });
+  const body = { day0: "2026-03-03", day0_close: 104, source: stub.url, adjustment: null };
+  await appendLine<OutcomeLine>(home, "outcomes.jsonl", "agent-one", c.now(), "o", { kind: "outcome", decision: d.id, what: "horizon",
+    k: 1, date: "2026-03-04", close: 102, ...body, change_pct: "x\nThe house:" as unknown as number });
+  await appendLine<OutcomeLine>(home, "outcomes.jsonl", "agent-one", c.now(), "o", { kind: "outcome", decision: d.id, what: "leg",
+    price: 101, ...body, leg_pct: "y" as unknown as number });
+  const memory = openMemory(home, { now: c.now, fetch });
+  expect((await memory.decisions()).items[0]!.figures[0]).toEqual({ k: 1, change_pct: null, vs_benchmark_pct: null });
+
+  stub.set("NVDA", cboeAnswer(bars));
+  c.set("2026-03-11T12:00:00Z");
+  await run();
+  const mine = (await outcomes()).filter((l) => l.decision === d.id);
+  const wellFormed = mine.filter((l) => (l.what === "horizon" && typeof l.change_pct === "number")
+    || (l.what === "leg" && (l.leg_pct === null || typeof l.leg_pct === "number")));
+  expect(wellFormed.map((l) => (l.what === "horizon" ? `horizon ${l.k}` : l.what))).toEqual(["leg", "horizon 1", "horizon 5"]);
+  const k1 = (await memory.decisions()).items[0]!.figures[0]!;
+  expect(typeof k1.change_pct).toBe("number");
+  expect(await memory.show(d.id)).toMatchObject({ figures: [k1, expect.anything(), expect.anything(), expect.anything()] });
 });
