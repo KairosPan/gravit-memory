@@ -8,8 +8,10 @@ export const BACKFILL_MS = DAY, VOID_WINDOW_MS = DAY, OCCASION_MS = DAY, NO_DECI
 export const MEDIAN_FROM = 8, OVERRIDDEN_FLAG = 3, TAG_SHARED_FLAG = 3;
 export const RECALL_MAX_BYTES = 4000, RECALL_STRUCT_MAX_BYTES = 16_000, INSTRUCTIONS_MAX_BYTES = 1500;
 export const STATUS_MAX_BYTES = 6000, REVIEW_MAX_BYTES = 8000, RECONCILE_MAX_BYTES = 2000;
-/** What the status, review and reconcile texts show at most: characters of a price source's URL. */
-export const URL_SHOWN = 200;
+/** What the status, review and reconcile texts show at most: characters of a price source's URL and of a refusal's why. */
+export const URL_SHOWN = 200, WHY_SHOWN = 160;
+/** How many measured decisions, ids, written lines, refusals and unmeasured decisions a list of theirs shows once it yields. */
+export const MEASURED_SHOWN = 10, IDS_SHOWN = 10, WRITTEN_SHOWN = 20, REFUSALS_SHOWN = 10, UNMEASURED_SHOWN = 10;
 export const DECISIONS_LIMIT_MAX = 200, DECISIONS_LIMIT_DEFAULT = 50;
 export const SHOW_CARDS = 5, SHOW_UNTOLD = 5, SHOW_SAME = 3, SHOW_LIKE = 3, THESIS_SHOWN = 160;
 export const RECONCILE_EVERY_MINUTES = 60, EVERY_MINUTES_MAX = 1440;

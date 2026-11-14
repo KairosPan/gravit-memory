@@ -10,7 +10,8 @@
 // is its id, its state and its fault, whatever Status it is handed. A changed card applies as armed, and its content
 // is the armed copy's (src/cards.ts parses the armed bytes). An applying card's words are never cut; when the cap
 // forces it, whole cards go from the end, with their facts, and are counted.
-import { LESSON_ID, RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN } from "./limits.js";
+import { IDS_SHOWN, LESSON_ID, MEASURED_SHOWN, RECONCILE_MAX_BYTES, REFUSALS_SHOWN, REVIEW_MAX_BYTES, STATUS_MAX_BYTES,
+  UNMEASURED_SHOWN, URL_SHOWN, WHY_SHOWN, WRITTEN_SHOWN } from "./limits.js";
 import type { CardState } from "./cards.js";
 import type { ReconcileReport, Written } from "./reconcile.js";
 import { cutTo, decisions, pct, quote, short } from "./render.js";
@@ -19,6 +20,7 @@ import type { Card, Check } from "./types.js";
 
 const T = {
   // the status
+  lessonInAll: "lesson in all,",
   lessonsInAll: "lessons in all,",
   applying: "applying.",
   chains: "Chains:",
@@ -46,6 +48,7 @@ const T = {
   noCheck: "no check names it",
   factsNotShown: "the facts of the lessons not shown are left out.",
   fault: "fault:",
+  tagLeftOut: "tag, left out for length.",
   tagsLeftOut: "tags, left out for length.",
   source: "source:",
   noSource: "no price source is set.",
@@ -103,9 +106,12 @@ const T = {
   refused: "refused",
   in: "in",
   notMeasured: "not measured",
+  writtenNotShownOne: "more line written, not shown.",
   writtenNotShown: "more lines written, not shown.",
+  refusalNotShown: "more refusal, not shown.",
   refusalsNotShown: "more refusals, not shown.",
   unmeasuredNotShown: "more not measured, not shown.",
+  earlierNotShown: "earlier not shown.",
   // shared
   none: "none.",
   notShown: "more not shown.",
@@ -121,8 +127,6 @@ export const TEXT_HEADS: readonly string[] = Object.freeze([T.applyHead, T.facts
 
 /** The review's start when since was absent: the epoch. */
 const EPOCH = "1970-01-01T00:00:00.000Z";
-/** How many measured decisions, ids, written lines and refusals a list shows once it yields. */
-const MEASURED_SHOWN = 10, IDS_SHOWN = 10, WRITTEN_SHOWN = 20, REFUSALS_SHOWN = 10;
 
 /** The first text within max bytes, or the last one tried. */
 function firstFit(texts: Iterable<string>, max: number): string {
@@ -139,10 +143,11 @@ function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** The first cap items as lines, then how many more there are, in the words of tail. */
-function capped<X>(xs: readonly X[], cap: number, line: (x: X) => string[], tail: string = T.notShown): string[] {
+/** The first cap items as lines, then how many more there are, in the words of tail: [for one, for more]. */
+function capped<X>(xs: readonly X[], cap: number, line: (x: X) => string[],
+  tail: readonly [string, string] = [T.notShown, T.notShown]): string[] {
   const lines = xs.slice(0, cap).flatMap(line);
-  if (xs.length > cap) lines.push(`${xs.length - cap} ${tail}`);
+  if (xs.length > cap) lines.push(count(xs.length - cap, ...tail));
   return lines;
 }
 
@@ -202,7 +207,7 @@ function renderStatus(v: StatusView, shape: StatusShape): string {
   out.push(T.tagsHead);
   if (s.tags.length === 0) out.push(T.none);
   else if (shape.tags) for (const t of s.tags) out.push(`- ${quote(t.tag)} ${t.count}`);
-  else out.push(`- ${s.tags.length} ${T.tagsLeftOut}`);
+  else out.push(`- ${count(s.tags.length, T.tagLeftOut, T.tagsLeftOut)}`);
 
   out.push(T.pricesHead, ...prices(s.prices));
   return out.join("\n");
@@ -226,7 +231,7 @@ function prices(p: Status["prices"]): string[] {
 function opening(s: Status, applying: number): string {
   const chains = s.chains.map((c) => (c.ok ? `${c.file} ${T.holds}` : `${c.file} ${T.brokenAt} ${c.line ?? "?"}`)).join(", ");
   const partial = s.partial.length > 0 ? ` ${T.partial} ${s.partial.join(", ")}.` : "";
-  return `${s.cards.length} ${T.lessonsInAll} ${applying} ${T.applying} ${T.chains} ${chains}.${partial}`;
+  return `${count(s.cards.length, T.lessonInAll, T.lessonsInAll)} ${applying} ${T.applying} ${T.chains} ${chains}.${partial}`;
 }
 
 function applyingCard(c: Applying): string[] {
@@ -268,12 +273,16 @@ export function reviewText(r: Review): string {
   return firstFit(reviewSteps(r), REVIEW_MAX_BYTES);
 }
 
-/** Its texts in yielding order: measured beyond 10 counted, store text cut, medians gone, lists beyond 10 counted. */
+/**
+ * Its texts in yielding order, as a recall yields: theses, conditions and reasons cut; medians gone; measured
+ * decisions beyond the newest MEASURED_SHOWN counted as earlier ones; id lists beyond IDS_SHOWN counted; then every
+ * list shorter.
+ */
 function* reviewSteps(r: Review): Generator<string> {
   const all = Number.POSITIVE_INFINITY;
   yield renderReview(r, { measured: all, cut: false, medians: true, ids: all });
-  yield renderReview(r, { measured: MEASURED_SHOWN, cut: false, medians: true, ids: all });
-  yield renderReview(r, { measured: MEASURED_SHOWN, cut: true, medians: true, ids: all });
+  yield renderReview(r, { measured: all, cut: true, medians: true, ids: all });
+  yield renderReview(r, { measured: all, cut: true, medians: false, ids: all });
   yield renderReview(r, { measured: MEASURED_SHOWN, cut: true, medians: false, ids: all });
   for (let n = IDS_SHOWN; n >= 0; n--) yield renderReview(r, { measured: Math.min(n, MEASURED_SHOWN), cut: true, medians: false, ids: n });
 }
@@ -282,8 +291,11 @@ function renderReview(r: Review, shape: ReviewShape): string {
   const out = [r.since === EPOCH ? T.fromStart : `${T.since} ${r.since}.`];
   const part = (head: string, lines: string[]): void => { out.push(head, ...(lines.length > 0 ? lines : [T.none])); };
 
-  part(T.measuredHead, r.measured.length === 0 ? [] : [...decisions(r.measured.slice(0, shape.measured), true, shape.cut),
-    ...(r.measured.length > shape.measured ? [`${r.measured.length - shape.measured} ${T.notShown}`] : [])]);
+  // The newest decisions are kept, in the order they were registered; the earlier ones are counted.
+  const shown = r.measured.slice(Math.max(0, r.measured.length - shape.measured));
+  const earlier = r.measured.length - shown.length;
+  part(T.measuredHead, [...(earlier > 0 ? [`${earlier} ${T.earlierNotShown}`] : []),
+    ...(shown.length > 0 ? decisions(shown, true, shape.cut) : [])]);
   part(T.lessonsHead, capped(r.cards, shape.ids, (c) => reviewCard(c, shape.medians)));
   part(T.tagsSharedHead, capped(r.tags_shared, shape.ids, (t) => [`- ${quote(t.tag)} ${t.decisions.length} ${T.decisionsWord}`]));
   part(T.pastHorizonHead, capped(r.past_horizon, shape.ids, (id) => [`- ${id}`]));
@@ -330,25 +342,32 @@ function freshText(r: ReconcileReport, fresh: NonNullable<ReconcileReport["fresh
   return parts.join(" ");
 }
 
-/** Its texts in yielding order: written lines beyond 20 counted, refusals beyond 10 counted, then every list shorter. */
+/**
+ * Its texts in yielding order: unmeasured decisions beyond UNMEASURED_SHOWN counted, then written lines beyond
+ * WRITTEN_SHOWN, then refusals beyond REFUSALS_SHOWN, then every list shorter, one line at a time.
+ */
 function* reconcileSteps(r: ReconcileReport): Generator<string> {
   const all = Number.POSITIVE_INFINITY;
   yield renderReconcile(r, { written: all, refused: all, unmeasured: all });
-  yield renderReconcile(r, { written: WRITTEN_SHOWN, refused: all, unmeasured: all });
-  yield renderReconcile(r, { written: WRITTEN_SHOWN, refused: REFUSALS_SHOWN, unmeasured: all });
-  for (let n = REFUSALS_SHOWN; n >= 0; n--) yield renderReconcile(r, { written: n, refused: n, unmeasured: n });
+  yield renderReconcile(r, { written: all, refused: all, unmeasured: UNMEASURED_SHOWN });
+  yield renderReconcile(r, { written: WRITTEN_SHOWN, refused: all, unmeasured: UNMEASURED_SHOWN });
+  yield renderReconcile(r, { written: WRITTEN_SHOWN, refused: REFUSALS_SHOWN, unmeasured: UNMEASURED_SHOWN });
+  for (let n = WRITTEN_SHOWN - 1; n >= 0; n--) {
+    yield renderReconcile(r, { written: n, refused: Math.min(n, REFUSALS_SHOWN), unmeasured: Math.min(n, UNMEASURED_SHOWN) });
+  }
 }
 
+/** A refusal's why is cut to WHY_SHOWN characters, whatever the shape. */
 function renderReconcile(r: ReconcileReport, shape: ReconcileShape): string {
   return [
     `${T.measured} ${r.measured}, ${T.closedCount} ${r.closed}, ${T.stillDue} ${r.stillDue}, ${T.refusedCount} ${r.refused.length}, `
       + `${T.unmeasured} ${r.unmeasured.length}.`,
     ...capped(r.written, shape.written, (w) => [`- ${T.wrote} ${w.decision} ${w.symbol}: ${writtenWhat(w)}`],
-      T.writtenNotShown),
-    ...capped(r.refused, shape.refused, (x) => [`- ${T.refused} ${x.symbol} ${T.in} ${x.market}: ${quote(x.why)}`],
-      T.refusalsNotShown),
+      [T.writtenNotShownOne, T.writtenNotShown]),
+    ...capped(r.refused, shape.refused, (x) => [`- ${T.refused} ${x.symbol} ${T.in} ${x.market}: ${quote(cutTo(x.why, WHY_SHOWN))}`],
+      [T.refusalNotShown, T.refusalsNotShown]),
     ...capped(r.unmeasured, shape.unmeasured, (u) => [`- ${T.notMeasured} ${u.decision}: ${u.why}`],
-      T.unmeasuredNotShown),
+      [T.unmeasuredNotShown, T.unmeasuredNotShown]),
   ].join("\n");
 }
 

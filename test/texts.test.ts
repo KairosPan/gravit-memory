@@ -4,13 +4,13 @@ import { beforeEach, expect, test } from "vitest";
 import type { CardState } from "../src/cards.js";
 import { DEFAULT_CONFIG, FILES } from "../src/home.js";
 import { openMemory, type Memory, type ReconcileReport, type Review, type Status } from "../src/index.js";
-import { RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN } from "../src/limits.js";
+import { RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN, WHY_SHOWN } from "../src/limits.js";
 import { appendLine } from "../src/log.js";
 import { agentsStatus } from "../src/mcp.js";
 import type { PastDecision } from "../src/recall.js";
 import { TEXT_FRAME, TEXT_HEADS, reconcileText, reviewText, statusText } from "../src/texts.js";
 import type { Card, LogFile, OutcomeLine, ProposalLine } from "../src/types.js";
-import { clock, tempHome, writeCard } from "./helpers.js";
+import { DAY, clock, tempHome, writeCard } from "./helpers.js";
 
 const ID = "no-chasing-after-a-run";
 const ask = { considering: ["buy"], symbol: "NVDA", market: "US", facts: { sector: "software", change_5d_pct: 34.1 } };
@@ -293,6 +293,74 @@ test("a review holds 8,000 bytes", () => {
   expect(small).toContain("quiet for 90 days; overridden 3 times or more");
 });
 
+/** A measured decision by hand: id d-20260302-<i, 8 digits>, its thesis as given, a 200-character condition. */
+function pastDecision(i: number, thesis: string): PastDecision {
+  return { id: `d-20260302-${String(i).padStart(8, "0")}`, date: "2026-03-02", by: "agent-one", whose: "owner", action: "buy",
+    symbol: "NVDA", thesis, wrong_if: "w".repeat(200), at_entry: false, backfilled: false,
+    figures: [{ k: 1, change_pct: 1.5, vs_benchmark_pct: -0.25 }] };
+}
+
+test("a review yields as a recall does: store text cut, medians gone, earlier decisions counted, then id lists", () => {
+  const record = { owner: { fired: 9, followed: 4, overridden: 5, seen: 0, backfilled: 0, no_decision: 0 },
+    agents: { followed: 1, overridden: 0, seen: 2 }, followed: [], overridden: [], backfilled: [],
+    medians: { followed: { 1: 1.25, 5: -2, 20: 3.5, 60: -4.75 }, overridden: { 1: 0.5, 5: 1.5, 20: -2.5, 60: 9.25 } } };
+  const of = (m: number, n: number): string => reviewText({ since: "2026-03-01T00:00:00.000Z",
+    measured: Array.from({ length: m }, (_, i) => pastDecision(i, "t".repeat(300))),
+    cards: Array.from({ length: n }, (_, i) => ({ id: `card-${String(i).padStart(2, "0")}`, record, quiet: false, overridden_often: false })),
+    tags_shared: [], past_horizon: [], without_wrong_if: 0, voided: [], proposals: [] });
+  const ids = (text: string): number[] => [...text.matchAll(/d-20260302-(\d{8})/g)].map((x) => Number(x[1]));
+
+  const cut = of(8, 15);                                                           // first, the theses and conditions cut
+  expect(cut).toContain(`"${"t".repeat(60)}…"`);
+  expect(cut).toContain("median followed");
+  expect(ids(cut)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+
+  const noMedians = of(8, 25);                                                     // then the medians go
+  expect(noMedians).not.toContain("median");
+  expect(ids(noMedians)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  expect(noMedians).toContain("card-24");
+
+  const earlier = of(20, 30);                                                      // then the earlier decisions are counted
+  expect(earlier).toContain("Measured since:\n10 earlier not shown.\n- 2026-03-02");
+  expect(ids(earlier)).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);          // the newest ten, in their order
+  expect(earlier).toContain("card-29");
+  expect(earlier).not.toMatch(/more not shown/);
+
+  const lists = of(20, 60);                                                        // then the id lists
+  expect(lists).toContain("10 earlier not shown.");
+  expect(lists).toContain("card-09");
+  expect(lists).not.toContain("card-10");
+  expect(lists).toContain("Lessons:\n");
+  expect(lists).toMatch(/^50 more not shown\.$/m);
+  for (const text of [cut, noMedians, earlier, lists]) expect(Buffer.byteLength(text)).toBeLessThanOrEqual(REVIEW_MAX_BYTES);
+});
+
+test("a review's list none of which is shown is its count alone", () => {
+  const r: Review = { since: "2026-03-01T00:00:00.000Z", measured: Array.from({ length: 3 }, (_, i) => pastDecision(i, "Filler.")),
+    cards: [], tags_shared: [{ tag: `tag:${"x".repeat(9000)}`, decisions: ["a", "b", "c"] }], past_horizon: [],
+    without_wrong_if: 0, voided: [], proposals: [] };
+  const text = reviewText(r);
+  expect(text).toContain("Measured since:\n3 earlier not shown.\nLessons:");
+  expect(text).toContain("Tags shared:\n1 more not shown.\nPast their own horizon");
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(REVIEW_MAX_BYTES);
+});
+
+test("a review of sixteen measured decisions names all sixteen", async () => {
+  const ids: string[] = [];
+  for (let i = 0; i < 16; i++) {                                                  // one a weekday, oldest first
+    const d = await memory.record("agent-one", { ...nvda, symbol: `SYM${i}`, thesis: `Filler thesis ${i}. `.repeat(8).trim(),
+      wrong_if: "A filler condition. ".repeat(24).trim() });
+    ids.push(d.id);
+    c.advance(i % 5 === 4 ? 3 * DAY : DAY);
+  }
+  c.set("2026-03-30T22:00:00Z");
+  for (const id of ids) await measured(id, 1, 1.5);
+  const text = reviewText(await memory.review("2026-03-29"));
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(REVIEW_MAX_BYTES);
+  for (const id of ids) expect(text).toContain(id);
+  expect(text).not.toContain("earlier not shown");
+});
+
 test("a reconcile's text says what was written and what was refused", () => {
   const base: ReconcileReport = { source: "http://127.0.0.1:9", measured: 2, closed: 1, stillDue: 3,
     refused: [{ market: "US", symbol: "AMD", why: "the source said \"no such symbol\"" }],
@@ -329,6 +397,39 @@ test("a reconcile's text says what was written and what was refused", () => {
   expect(RECONCILE_MAX_BYTES).toBe(2000);
   expect(big).toMatch(/^\d+ more lines written, not shown\.$/m);
   expect(big).toMatch(/^\d+ more refusals, not shown\.$/m);
+});
+
+test("a reconcile's text counts what cannot be measured first, and cuts a refusal's why", () => {
+  const base: ReconcileReport = { source: "http://127.0.0.1:9", measured: 15, closed: 0, stillDue: 0, refused: [], written: [],
+    unmeasured: Array.from({ length: 60 }, (_, i) => ({ decision: `d-20260301-${String(i).padStart(8, "0")}`, why: "no symbol" as const })) };
+  const written = Array.from({ length: 15 }, (_, i) => ({ decision: `d-20260302-${String(i).padStart(8, "0")}`, symbol: "NVDA",
+    what: "horizon" as const, k: 1, pct: 1.5 }));
+  const lines = reconcileText({ ...base, written }).split("\n");
+  expect(lines.filter((l) => l.startsWith("- wrote"))).toHaveLength(15);         // every written line stays
+  expect(lines.filter((l) => l.startsWith("- not measured"))).toHaveLength(10);
+  expect(lines).toContain("50 more not measured, not shown.");
+
+  const why = `the price source refused the question: ${"x".repeat(2500)}`;
+  const one = reconcileText({ ...base, measured: 0, unmeasured: [], refused: [{ market: "US", symbol: "NVDA", why }] });
+  expect(one.split("\n")).toEqual(["Measured 0, closed 0, still due 0, refused 1, unmeasured 0.",
+    `- refused NVDA in US: "${[...why].slice(0, WHY_SHOWN).join("")}…"`]);
+  expect(WHY_SHOWN).toBe(160);
+});
+
+test("the texts say one and more in their own grammar", async () => {
+  await writeCard(home);
+  expect(statusText(await memory.status())).toMatch(/^1 lesson in all, 0 applying\./);
+  expect(statusText(bareStatus({ tags: [{ tag: "tag:one", count: 1 }], cards: Array.from({ length: 400 }, (_, i) =>
+    ({ id: `other-${String(i).padStart(3, "0")}`, state: "unarmed" as const, fault: "f".repeat(20) })) })))
+    .toContain("- 1 tag, left out for length.");
+  const written = (n: number) => Array.from({ length: n }, (_, i) => ({ decision: `d-20260302-${String(i).padStart(8, "0")}`,
+    symbol: "NVDA", what: "leg" as const, pct: 1 }));
+  const report = (w: number, r: number, why = 200): string => reconcileText({ source: "http://127.0.0.1:9", measured: w, closed: 0,
+    stillDue: 0, unmeasured: [], written: written(w), refused: Array.from({ length: r }, () => ({ market: "US", symbol: "AMD", why: "y".repeat(why) })) });
+  expect(report(0, 11)).toContain("\n1 more refusal, not shown.");
+  const counts = Array.from({ length: 60 }, (_, i) => report(21, 6, 120 + i)).flatMap((t) => t.split("\n").filter((l) => /more lines? written/.test(l)));
+  expect(counts).toContain("1 more line written, not shown.");                     // one length of refusal leaves one line out
+  for (const line of counts) expect(line.startsWith("1 ") === line.includes(" line written")).toBe(true);
 });
 
 /** Characters JSON leaves raw that hide or reorder text: DEL, a C1 control, a line separator, a bidi override, a tag. */
