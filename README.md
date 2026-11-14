@@ -229,6 +229,21 @@ that asked the source counts whether it was answered or refused; a run that aske
 the interval a reconcile reads nothing, writes nothing and answers `fresh`, with the time the source was asked and the
 time it may be asked again. `gravit-memory reconcile --force` reads at once; the agent's tool has no such choice.
 
+## For a host
+
+An application that embeds the package opens the memory with `openMemory(home)` and draws its own screens from two
+reads, which no agent's tool reaches:
+
+- `lessons()`: every lesson card by id, with its state, the armed copy's text and SHA-256, the working file's text
+  and SHA-256 (or why it does not parse), and, for a card that applies, its record.
+- `decisions({ symbol, before, limit })`: the decisions newest first, each with its amendments and its figures;
+  `before` names a decision's id and pages back from it, `limit` is 1 to 200 (50 when absent), and `more` says
+  whether older ones were left out. A void decision is listed and marked.
+
+The owner's acts are `Memory.owner`. `owner.arm(lesson, expect)` takes as `expect` the SHA-256 of the bytes the owner
+was shown (a read's `file.sha256`), so that a file changed meanwhile is not armed. An owner's act must come from the
+owner's own gesture on the host's screen, never from an agent's turn.
+
 ## What is protected, and what is not
 
 The owner's acts are a gate, not containment. A process that can write the home can write anything in it, including

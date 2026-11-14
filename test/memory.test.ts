@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import type { Code } from "../src/errors.js";
 import * as api from "../src/index.js";
+import { TOOL_NAMES } from "../src/mcp.js";
 import { openMemory, type Memory } from "../src/index.js";
 import { DAY, STAND_IN_CARD, clock, tempHome, writeCard } from "./helpers.js";
 
@@ -136,4 +137,15 @@ test("the package exports no bare owner's act", () => {
   for (const name of ["openMemory", "initHome", "resolveHome", "assertHome", "readConfig", "MemoryError", "AGENT_NAME"]) {
     expect(api).toHaveProperty(name);
   }
+});
+
+test("the door has no tool for the reads", () => {
+  expect(TOOL_NAMES).toEqual(["memory_recall", "memory_record", "memory_amend", "memory_propose", "memory_reconcile",
+    "memory_review", "memory_status"]);
+  for (const name of ["readLessons", "listDecisions", "arm", "retire", "discard", "accept", "edit", "reject"]) {
+    expect(api).not.toHaveProperty(name);
+  }
+  const memory = openMemory("unused");
+  expect(typeof memory.lessons).toBe("function");
+  expect(typeof memory.decisions).toBe("function");
 });

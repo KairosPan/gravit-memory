@@ -49,6 +49,7 @@ npm run build        # tsc to dist/; prepare runs it, so the package installs fr
 | `src/owner.ts` | the owner's acts on a card: arm, retire, discard |
 | `src/prices.ts` | reading daily bars from the price source; the only network call |
 | `src/proposals.ts` | agents' proposals of lessons and the owner's answers: accept, edit, reject |
+| `src/reads.ts` | two reads for a host's own screens, not the agent's door: the lessons with their texts, the decisions with what followed |
 | `src/recall.ts` | answering a recall before a decision, and its line in `recalls.jsonl` |
 | `src/reconcile.ts` | asking the price source for every decision with something to measure, and appending outcomes |
 | `src/records.ts` | occasions, and each card's record of them |

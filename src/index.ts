@@ -10,6 +10,7 @@ import { FILES, assertHome, readConfig } from "./home.js";
 import { readLog, resealLog } from "./log.js";
 import { arm, discard, retire } from "./owner.js";
 import { accept, edit, propose, reject } from "./proposals.js";
+import { listDecisions, readLessons, type Decisions, type Lessons } from "./reads.js";
 import { recall, type RecallAnswer } from "./recall.js";
 import { readOutcomes, reconcile, type ReconcileReport } from "./reconcile.js";
 import { cardRecord, figuresOf, occasionsOf, type CardRecord, type Figure } from "./records.js";
@@ -25,6 +26,7 @@ export type { CardState } from "./cards.js";
 export type { AmendInput, DecisionInput, DecisionView } from "./decisions.js";
 export type { Need } from "./match.js";
 export type { ProposalInput } from "./proposals.js";
+export type { DecisionItem, Decisions, Lessons, LessonView } from "./reads.js";
 export type { AppliedCard, House, PastDecision, RecallAnswer, RecallInput, UntoldCard } from "./recall.js";
 export type { ReconcileReport, Written } from "./reconcile.js";
 export type { Case, CardRecord, Figure } from "./records.js";
@@ -42,6 +44,10 @@ export interface Memory {
   status(): Promise<Status>;
   verify(): Promise<VerifyReport>;
   show(id: string): Promise<{ decision: DecisionView; figures: Figure[] } | { card: CardState; record: CardRecord | null }>;
+  /** Every lesson card with its armed copy, its working file and its record: for a host's own screen, not an agent's. */
+  lessons(): Promise<Lessons>;
+  /** The decisions newest first, each with its figures: for a host's own screen, not an agent's. */
+  decisions(filter?: { symbol?: string; before?: string; limit?: number }): Promise<Decisions>;
   owner: { arm(lesson: string, expect?: string): Promise<{ sha256: string }>; retire(lesson: string, reason: string): Promise<void>;
     discard(lesson: string): Promise<void>; void(decision: string, reason: string): Promise<void>;
     reseal(): Promise<Array<{ file: LogFile; broke_at: number }>>;
@@ -78,6 +84,8 @@ export function openMemory(home: string, deps?: Deps): Memory {
     status: () => inHome(() => status(home)),
     verify: () => inHome(() => verify(home)),
     show: (id) => inHome(() => show(home, id, now())),
+    lessons: () => inHome(() => readLessons(home, now())),
+    decisions: (filter) => inHome(() => listDecisions(home, filter)),
     owner: {
       arm: (lesson, expect) => inHome(() => arm(home, lesson, now(), expect)),
       retire: (lesson, reason) => inHome(() => retire(home, lesson, reason, now())),

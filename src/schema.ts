@@ -5,8 +5,8 @@
 import { z } from "zod";
 import { MemoryError } from "./errors.js";
 import {
-  CARD_WORDS_MAX, EVIDENCE_MAX, FACT_NAME, FACT_SOURCE_MAX, FACTS_MAX, HORIZON_MAX, HORIZON_MIN, LESSON_ID, NOTE_MAX,
-  REASON_MAX, SIZE_MAX, TAGS_MAX, THESIS_MAX, WORDS_MAX, WRONG_IF_MAX,
+  CARD_WORDS_MAX, DECISIONS_LIMIT_MAX, EVIDENCE_MAX, FACT_NAME, FACT_SOURCE_MAX, FACTS_MAX, HORIZON_MAX, HORIZON_MIN,
+  LESSON_ID, NOTE_MAX, REASON_MAX, SIZE_MAX, TAGS_MAX, THESIS_MAX, WORDS_MAX, WRONG_IF_MAX,
 } from "./limits.js";
 
 export const ACTIONS = ["buy", "add", "trim", "sell", "short", "cover", "hold", "pass"] as const;
@@ -93,6 +93,14 @@ export const amendInput = z.discriminatedUnion("what", [
     value: chars(THESIS_MAX), note }),
   z.strictObject({ decision: decisionId, what: z.literal("void"), reason: chars(REASON_MAX) }),
 ]);
+
+/** A host's filter of the decisions it lists: by symbol, before a decision's id, and how many at most. */
+export const decisionsFilter = z.strictObject({
+  symbol: symbol.optional(),
+  before: decisionId.optional(),
+  limit: z.number({ error: "must be a number" }).int("must be a whole number")
+    .min(1, `must be 1 to ${DECISIONS_LIMIT_MAX}`).max(DECISIONS_LIMIT_MAX, `must be 1 to ${DECISIONS_LIMIT_MAX}`).optional(),
+});
 
 export const recallInput = z.strictObject({
   considering: z.array(action).min(1, "names 1 to 3 actions").max(3, "names 1 to 3 actions")
