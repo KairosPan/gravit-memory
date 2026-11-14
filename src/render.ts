@@ -271,10 +271,11 @@ export function short(s: string, cut: boolean): string {
   return cut ? cutTo(s, CUT_TO) : s;
 }
 
-/** Store text cut to its first n characters and the mark, when it is longer than n. */
+/** Store text cut to its first n characters and the mark, when it is longer than n; read no further than it keeps. */
 export function cutTo(s: string, n: number): string {
-  const chars = [...s];
-  return chars.length > n ? `${chars.slice(0, n).join("")}${F.cut}` : s;
+  let at = 0;
+  for (let kept = 0; kept < n && at < s.length; kept++) at += s.codePointAt(at)! > 0xffff ? 2 : 1;
+  return at < s.length ? `${s.slice(0, at)}${F.cut}` : s;
 }
 
 /**

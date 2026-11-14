@@ -11,9 +11,9 @@
 // is the armed copy's (src/cards.ts parses the armed bytes). An applying card's words are never cut; when the cap
 // forces it, whole cards go from the end, with their facts, and are counted. An id, a name, a symbol, a market, a
 // state or an operator from the store is printed unquoted only when it has its shape (`ident`, src/render.ts).
-import { FACT_NAME, IDS_SHOWN, LESSON_ID, MEASURED_SHOWN, RECONCILE_MAX_BYTES, REFUSALS_SHOWN, REVIEW_MAX_BYTES, STATUS_MAX_BYTES,
+import { CARD_FACTS_SHOWN, CARD_LIST_SHOWN, CARDS_NAMED, FACT_NAME, IDS_SHOWN, LESSON_ID, MEASURED_SHOWN, RECONCILE_MAX_BYTES, REFUSALS_SHOWN, REVIEW_MAX_BYTES, STATUS_MAX_BYTES,
   UNMEASURED_SHOWN, URL_SHOWN, WHY_SHOWN, WRITTEN_SHOWN } from "./limits.js";
-import type { CardState } from "./cards.js";
+import { isApplying, type CardState } from "./cards.js";
 import type { ReconcileReport, Written } from "./reconcile.js";
 import { ACTION, cutTo, decisions, ID_WORD, ident, pct, PROPOSAL_ID, quote, SAYS, short, WRITER } from "./render.js";
 import type { Review, Status } from "./review.js";
@@ -49,6 +49,11 @@ const T = {
   checks: "checks:",
   noCheck: "no check names it",
   factsNotShown: "the facts of the lessons not shown are left out.",
+  factNotShownOne: "more fact, not shown.",
+  factsNotShownMany: "more facts, not shown.",
+  namedNotShown: "not shown:",
+  and: "and",
+  moreTail: "more",
   fault: "fault:",
   tagLeftOut: "tag, left out for length.",
   tagsLeftOut: "tags, left out for length.",
@@ -159,7 +164,7 @@ const WHAT = /^(new|change|retire)$/, NOT_MEASURED = /^no (symbol|market)$/;
 
 // ---- the status ------------------------------------------------------------------------------------------------
 
-interface StatusShape { tags: boolean; others: boolean; cut: boolean }
+interface StatusShape { tags: boolean; others: boolean; cut: boolean; facts: number }
 type Applying = CardState & { card: Card };
 
 /** The status's text, at most STATUS_MAX_BYTES. */
@@ -167,38 +172,55 @@ export function statusText(s: Status): string {
   return firstFit(statusSteps(s), STATUS_MAX_BYTES);
 }
 
-/** Its texts in yielding order: tags to a count, other lessons to a count per state, definitions cut, cards from the end. */
+/**
+ * Its texts in yielding order: tags to a count, other lessons to a count per state, definitions and the items of a
+ * card's lists cut, a card's facts beyond CARD_FACTS_SHOWN counted, then whole cards: caveats from the end, then red
+ * lines from the end.
+ */
 function* statusSteps(s: Status): Generator<string> {
   const ownerHolds = s.chains.find((c) => c.file === "owner.jsonl")?.ok !== false;
-  const applying = s.cards.filter((c): c is Applying => ownerHolds && (c.state === "armed" || c.state === "changed")
-    && c.card !== undefined);
+  const applying = s.cards.filter((c): c is Applying => isApplying(c, ownerHolds));
   const others = s.cards.filter((c) => !applying.includes(c as Applying));
-  const view = { s, ownerHolds, applying, others, all: applying.length };
-  const shapes: StatusShape[] = [{ tags: true, others: true, cut: false }, { tags: false, others: true, cut: false },
-    { tags: false, others: false, cut: false }, { tags: false, others: false, cut: true }];
+  const view = { s, ownerHolds, applying, others, all: applying };
+  const all = Number.POSITIVE_INFINITY;
+  const shapes: StatusShape[] = [{ tags: true, others: true, cut: false, facts: all },
+    { tags: false, others: true, cut: false, facts: all }, { tags: false, others: false, cut: false, facts: all },
+    { tags: false, others: false, cut: true, facts: all }, { tags: false, others: false, cut: true, facts: CARD_FACTS_SHOWN }];
   for (const shape of shapes) yield renderStatus(view, shape);
-  for (let n = applying.length - 1; n >= 0; n--) yield renderStatus({ ...view, applying: applying.slice(0, n) }, shapes.at(-1)!);
+  const going = [...applying.filter((c) => c.card.strength !== "red-line").reverse(),
+    ...applying.filter((c) => c.card.strength === "red-line").reverse()];
+  for (let n = 1; n <= going.length; n++) {
+    const gone = new Set(going.slice(0, n));
+    yield renderStatus({ ...view, applying: applying.filter((c) => !gone.has(c)) }, shapes.at(-1)!);
+  }
 }
 
-interface StatusView { s: Status; ownerHolds: boolean; applying: Applying[]; others: CardState[]; all: number }
+interface StatusView { s: Status; ownerHolds: boolean; applying: Applying[]; others: CardState[]; all: Applying[] }
 
 function renderStatus(v: StatusView, shape: StatusShape): string {
   const { s } = v;
-  const more = v.all - v.applying.length;
-  const out = [opening(s, v.all), T.applyHead];
+  const notShown = v.all.filter((c) => !v.applying.includes(c));
+  const out = [opening(s, v.all.length), T.applyHead];
   if (!v.ownerHolds) out.push(T.ownerBroken);
-  else if (v.all === 0) out.push(T.noneArmed);
-  for (const c of v.applying) out.push(...applyingCard(c));
-  if (more > 0) out.push(`${more} ${T.notShown}`);
+  else if (v.all.length === 0) out.push(T.noneArmed);
+  for (const c of v.applying) out.push(...applyingCard(c, shape.cut));
+  if (notShown.length > 0) out.push(`${notShown.length} ${T.notShown}`, `- ${T.namedNotShown} ${named(notShown.map((c) => c.id))}`);
 
   out.push(T.factsHead);
-  const shown = new Set(v.applying.map((c) => c.id));
-  const facts = s.facts.filter((f) => shown.has(f.card));
-  for (const f of facts) {
-    out.push(`- ${ident(f.card, LESSON_ID)}: ${ident(f.fact, FACT_NAME)}, ${T.definition} ${quote(short(f.definition, shape.cut))}, ${T.checks} ${checks(f.checked)}`);
+  let facts = 0;
+  for (const c of v.applying) {
+    const own = s.facts.filter((f) => f.card === c.id);
+    facts += own.length;
+    for (const f of own.slice(0, shape.facts)) {
+      out.push(`- ${ident(f.card, LESSON_ID)}: ${ident(f.fact, FACT_NAME)}, ${T.definition} ${quote(short(f.definition, shape.cut))}, `
+        + `${T.checks} ${checks(f.checked, shape.cut)}`);
+    }
+    if (own.length > shape.facts) {
+      out.push(`- ${ident(c.id, LESSON_ID)}: ${count(own.length - shape.facts, T.factNotShownOne, T.factsNotShownMany)}`);
+    }
   }
-  if (more > 0) out.push(T.factsNotShown);
-  else if (facts.length === 0) out.push(T.none);
+  if (notShown.length > 0) out.push(T.factsNotShown);
+  else if (facts === 0) out.push(T.none);
 
   out.push(T.othersHead);
   if (v.others.length === 0) out.push(T.none);
@@ -212,6 +234,18 @@ function renderStatus(v: StatusView, shape: StatusShape): string {
 
   out.push(T.pricesHead, ...prices(s.prices));
   return out.join("\n");
+}
+
+/** The ids of cards not shown: at most CARDS_NAMED, then how many more. */
+function named(ids: string[]): string {
+  const shown = ids.slice(0, CARDS_NAMED).map((id) => ident(id, LESSON_ID));
+  return [...shown, ...(ids.length > CARDS_NAMED ? [`${T.and} ${ids.length - CARDS_NAMED} ${T.moreTail}`] : [])].join(", ");
+}
+
+/** A list in a card's lines: its first CARD_LIST_SHOWN items, each as item gives it, then how many more. */
+function listed<X>(xs: readonly X[], item: (x: X) => string): string {
+  const shown = xs.slice(0, CARD_LIST_SHOWN).map(item);
+  return [...shown, ...(xs.length > CARD_LIST_SHOWN ? [`${T.and} ${xs.length - CARD_LIST_SHOWN} ${T.moreTail}`] : [])].join(", ");
 }
 
 /**
@@ -235,12 +269,13 @@ function opening(s: Status, applying: number): string {
   return `${count(s.cards.length, T.lessonInAll, T.lessonsInAll)} ${applying} ${T.applying} ${T.chains} ${chains}.${partial}`;
 }
 
-function applyingCard(c: Applying): string[] {
+function applyingCard(c: Applying, cut: boolean): string[] {
   const card = c.card;
   const strength = card.strength === "red-line" ? T.redLine : T.caveat;
   const scope: string[] = [];
-  if (card.scope?.market !== undefined) scope.push(`${T.market} ${card.scope.market.map(quote).join(", ")}`);
-  if (card.scope?.symbols !== undefined) scope.push(`${T.symbols} ${card.scope.symbols.map(quote).join(", ")}`);
+  const item = (x: string): string => quote(short(x, cut));
+  if (card.scope?.market !== undefined) scope.push(`${T.market} ${listed(card.scope.market, item)}`);
+  if (card.scope?.symbols !== undefined) scope.push(`${T.symbols} ${listed(card.scope.symbols, item)}`);
   const scoped = scope.length > 0 ? `, ${T.scope} ${scope.join("; ")}` : "";
   const changed = c.state === "changed" ? ` ${T.changed}` : "";
   return [`- ${strength} ${ident(card.id, LESSON_ID)}, ${T.says} ${ident(card.says, SAYS)} ${T.on} `
@@ -252,11 +287,11 @@ function otherCard(c: CardState): string {
   return `- ${ident(c.id, LESSON_ID)} ${ident(c.state, STATE)}${c.fault !== undefined ? `, ${T.fault} ${quote(c.fault)}` : ""}`;
 }
 
-/** A fact's checks: each operator and value, the value as JSON quotes it. */
-function checks(list: Check[]): string {
+/** A fact's checks: each operator and value, the value as JSON quotes it; an `in` list as a card's lists are shown. */
+function checks(list: Check[], cut: boolean): string {
   if (list.length === 0) return T.noCheck;
-  const value = (x: Check["value"]): string => (Array.isArray(x) ? `[${x.map(value).join(", ")}]`
-    : typeof x === "string" ? quote(x) : String(x));
+  const value = (x: Check["value"]): string => (Array.isArray(x) ? `[${listed(x, value)}]`
+    : typeof x === "string" ? quote(short(x, cut)) : String(x));
   return list.map((ch) => `${ident(ch.op, OP)} ${value(ch.value)}`).join("; ");
 }
 

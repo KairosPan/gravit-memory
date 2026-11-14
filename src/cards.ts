@@ -98,9 +98,16 @@ export async function cardStates(home: string): Promise<CardStates> {
   }
 
   const ownerChainBroken = !log.chain.ok;
-  const applying = ownerChainBroken ? []
-    : cards.flatMap((c) => ((c.state === "armed" || c.state === "changed") && c.card ? [c.card] : []));
+  const applying = cards.flatMap((c) => (isApplying(c, !ownerChainBroken) ? [c.card] : []));
   return { ownerChainBroken, ...(log.chain.ok ? {} : { brokeAt: log.chain.line }), cards, applying };
+}
+
+/**
+ * Whether a card applies: armed, or changed since and applying as armed, with its armed copy's content, while
+ * owner.jsonl's chain holds. The one rule every reader of the cards keeps.
+ */
+export function isApplying(c: CardState, ownerChainHolds: boolean): c is CardState & { card: Card } {
+  return ownerChainHolds && (c.state === "armed" || c.state === "changed") && c.card !== undefined;
 }
 
 /** The path of a card's working file. */

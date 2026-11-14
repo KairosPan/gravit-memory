@@ -4,7 +4,7 @@ import { beforeEach, expect, test } from "vitest";
 import type { CardState } from "../src/cards.js";
 import { DEFAULT_CONFIG, FILES } from "../src/home.js";
 import { openMemory, type Memory, type ReconcileReport, type Review, type Status } from "../src/index.js";
-import { RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN, WHY_SHOWN } from "../src/limits.js";
+import { CARDS_NAMED, RECONCILE_MAX_BYTES, REVIEW_MAX_BYTES, STATUS_MAX_BYTES, URL_SHOWN, WHY_SHOWN } from "../src/limits.js";
 import { appendLine } from "../src/log.js";
 import { agentsStatus } from "../src/mcp.js";
 import type { PastDecision } from "../src/recall.js";
@@ -180,7 +180,7 @@ test("a status holds 6,000 bytes and cuts no applying card's words", () => {
   const text = statusText(s);
   expect(Buffer.byteLength(text)).toBeLessThanOrEqual(STATUS_MAX_BYTES);
   expect(STATUS_MAX_BYTES).toBe(6000);
-  const shown = s.cards.filter((x) => text.includes(x.id));
+  const shown = s.cards.filter((x) => text.includes(`caveat ${x.id},`));             // the cards not shown are named alone
   expect(shown.length).toBeGreaterThan(0);
   for (const x of shown) expect(text).toContain(x.card!.words);
   expect(text).toMatch(/\d+ more not shown/);
@@ -219,6 +219,71 @@ test("a status yields in order", () => {
   expect(four).toContain("card-01");
   expect(four).not.toContain("card-30");
   expect(Buffer.byteLength(four)).toBeLessThanOrEqual(STATUS_MAX_BYTES);
+});
+
+/** A filler red line or caveat with n facts, each checked >= 1 but the first, which may be an in-check of the values given. */
+function wideCard(id: string, o: { strength?: string; words?: string; facts?: number; definition?: string; symbols?: string[];
+  inValues?: string[] } = {}): string {
+  const names = Array.from({ length: o.facts ?? 0 }, (_, i) => `fact_${String(i).padStart(2, "0")}`);
+  const check = names.length === 0 ? "" : `check:\n${names.map((f, i) => (i === 0 && o.inValues !== undefined
+    ? `  - { fact: ${f}, op: in, value: ${JSON.stringify(o.inValues)} }\n` : `  - { fact: ${f}, op: ">=", value: 1 }\n`)).join("")}`;
+  const defs = names.length === 0 ? "" : `facts:\n${names.map((f) => `  ${f}: ${JSON.stringify(o.definition ?? "A filler definition.")}\n`).join("")}`;
+  const scope = o.symbols === undefined ? "" : `scope:\n  symbols: ${JSON.stringify(o.symbols)}\n`;
+  return `---\nid: ${id}\nsays: dont\nactions: [buy]\nstrength: ${o.strength ?? "red-line"}\n${scope}${check}${defs}---\n`
+    + `${o.words ?? "Filler words."}\n`;
+}
+
+test("a single card larger than the cap keeps its id and its words whole", async () => {
+  const cases: Array<[string, string, (text: string) => void]> = [
+    ["many-facts", wideCard("many-facts", { words: HAN.repeat(200), facts: 30, definition: HAN.repeat(100) }), (text) => {
+      expect(text).toContain("- many-facts: fact_07, definition:");
+      expect(text).not.toContain("fact_08");
+      expect(text).toContain("- many-facts: 22 more facts, not shown.");
+    }],
+    ["wide-scope", wideCard("wide-scope", { symbols: Array.from({ length: 800 }, (_, i) => `T${i}`) }), (text) => {
+      expect(text).toContain(`scope: symbols "T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", and 790 more`);
+    }],
+    ["long-in", wideCard("long-in", { facts: 1, inValues: Array.from({ length: 700 }, (_, i) => `sector-${i}`) }), (text) => {
+      expect(text).toContain(`checks: in ["sector-0", "sector-1", "sector-2", "sector-3", "sector-4", "sector-5", "sector-6", `
+        + `"sector-7", "sector-8", "sector-9", and 690 more]`);
+    }],
+  ];
+  for (const [id, file, more] of cases) {
+    await writeCard(home, file);
+    await memory.owner.arm(id);
+    const s = agentsStatus(await memory.status());
+    const text = statusText(s);
+    expect(Buffer.byteLength(text), id).toBeLessThanOrEqual(STATUS_MAX_BYTES);
+    expect(text).toContain(`- red line ${id}, says dont on buy`);
+    expect(text).toContain(`owner's words: "${s.cards.find((x) => x.id === id)!.card!.words}"`);
+    expect(text).not.toContain("more not shown");
+    more(text);
+    await memory.owner.retire(id, "Done with the filler.");
+  }
+});
+
+test("a red line outlasts a caveat, and the cards not shown are named", () => {
+  const caveats = armedCards(20, words, "d".repeat(500));
+  const reds: CardState[] = ["red-a", "red-b"].map((id) => ({ id, state: "armed", sha256: "0".repeat(64),
+    card: { id, says: "dont", actions: ["buy"], strength: "red-line", words: `${HAN.repeat(198)}${id.slice(-1)}` } }));
+  const text = statusText(bareStatus({ cards: [...reds, ...caveats.cards], facts: caveats.facts }));
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(STATUS_MAX_BYTES);
+  expect(text).toContain("- red line red-a,");
+  expect(text).toContain("- red line red-b,");
+  const shown = caveats.cards.filter((x) => text.includes(`caveat ${x.id},`)).map((x) => x.id);
+  expect(shown).toEqual(caveats.cards.slice(0, shown.length).map((x) => x.id));    // caveats go from the end
+  const gone = caveats.cards.slice(shown.length).map((x) => x.id);
+  expect(gone.length).toBeGreaterThan(CARDS_NAMED);
+  expect(text).toContain(`${gone.length} more not shown.\n- not shown: ${gone.slice(0, CARDS_NAMED).join(", ")}, `
+    + `and ${gone.length - CARDS_NAMED} more\n`);
+
+  const onlyReds = statusText(bareStatus({ cards: Array.from({ length: 12 }, (_, i): CardState => {
+    const id = `red-${String(i).padStart(2, "0")}`;
+    return { id, state: "armed", card: { id, says: "dont", actions: ["buy"], strength: "red-line", words: HAN.repeat(200) } };
+  }) }));
+  expect(onlyReds).toContain("- red line red-00,");                                // red lines too go from the end
+  expect(onlyReds).not.toContain("- red line red-11,");
+  expect(onlyReds).toMatch(/- not shown: [^\n]*red-11/);
 });
 
 test("a review's text holds its material", async () => {
@@ -430,6 +495,57 @@ test("the texts say one and more in their own grammar", async () => {
   const counts = Array.from({ length: 60 }, (_, i) => report(21, 6, 120 + i)).flatMap((t) => t.split("\n").filter((l) => /more lines? written/.test(l)));
   expect(counts).toContain("1 more line written, not shown.");                     // one length of refusal leaves one line out
   for (const line of counts) expect(line.startsWith("1 ") === line.includes(" line written")).toBe(true);
+});
+
+/** A character that is escaped to nine bytes in a text: the worst case for every cap. */
+const WIDE = "\u{E0041}";
+const wide = (n: number): string => WIDE.repeat(n);
+const WIDE_ESCAPED = "\\u{e0041}";
+
+test("each text holds its cap on the worst input its files and schemas allow", () => {
+  const files = Object.values(FILES) as LogFile[];
+  const long = `x\n${wide(20_000)}`;                                                 // an id written by hand
+  const cards: CardState[] = Array.from({ length: 30 }, (_, i) => {
+    const id = `card-${String(i).padStart(2, "0")}`;
+    const facts = Object.fromEntries(Array.from({ length: 20 }, (_, k) => [`fact_${k}`, wide(500)]));
+    return { id, state: "armed", sha256: "0".repeat(64), card: { id, says: "dont", actions: ["buy", "add", "trim"],
+      strength: i % 2 === 0 ? "red-line" : "caveat", words: wide(200), facts,
+      scope: { market: Array.from({ length: 50 }, () => wide(300)), symbols: Array.from({ length: 900 }, () => wide(300)) },
+      check: Object.keys(facts).map((fact) => ({ fact, op: "in" as const, value: Array.from({ length: 50 }, () => wide(300)) })) } };
+  });
+  const status = bareStatus({ partial: files, chains: files.map((file, i) => ({ file, ok: false, line: 1_000_000 + i })),
+    cards: [...cards, ...Array.from({ length: 500 }, (_, i): CardState => ({ id: `${long}${i}`, state: "refused", fault: wide(1000) }))],
+    facts: cards.flatMap((x) => Object.entries(x.card!.facts!).map(([fact, definition]) => ({ card: x.id, fact, definition,
+      checked: x.card!.check!.filter((ch) => ch.fact === fact) }))),
+    tags: Array.from({ length: 500 }, (_, i) => ({ tag: `${wide(32)}:${wide(48)}`, count: i })),
+    prices: { url: `http://127.0.0.1:9/${wide(6000)}`, last: { t: "2026-03-02T15:00:00.000Z", ok: false, refused: 1_000_000, asked: 9 } } });
+  const statusOf = statusText(status);
+  expect(Buffer.byteLength(statusOf)).toBeLessThanOrEqual(STATUS_MAX_BYTES);
+
+  const past = (i: number): PastDecision => ({ ...pastDecision(i, wide(1000)), id: i % 2 === 0 ? `${long}${i}` : pastDecision(i, "").id,
+    by: long, symbol: long, wrong_if: wide(500) });
+  const record = { owner: { fired: 9, followed: 4, overridden: 5, seen: 0, backfilled: 0, no_decision: 0 },
+    agents: { followed: 1, overridden: 0, seen: 2 }, followed: [], overridden: [], backfilled: [],
+    medians: { followed: Object.fromEntries(Array.from({ length: 250 }, (_, k) => [k + 1, -123456.78])), overridden: {} } };
+  const review: Review = { since: "2026-03-01T00:00:00.000Z", measured: Array.from({ length: 300 }, (_, i) => past(i)),
+    cards: Array.from({ length: 300 }, (_, i) => ({ id: `${long}${i}`, record, quiet: true, overridden_often: true })),
+    tags_shared: Array.from({ length: 300 }, () => ({ tag: `${wide(32)}:${wide(48)}`, decisions: ["a", "b", "c"] })),
+    past_horizon: Array.from({ length: 300 }, (_, i) => `${long}${i}`), without_wrong_if: 1_000_000,
+    voided: Array.from({ length: 300 }, (_, i) => ({ decision: `${long}${i}`, by: long })),
+    proposals: Array.from({ length: 300 }, (_, i) => ({ kind: "proposal", id: `${long}${i}`, what: long, lesson: long, by: long,
+      reason: wide(500) }) as unknown as ProposalLine) };
+  const reviewOf = reviewText(review);
+  expect(Buffer.byteLength(reviewOf)).toBeLessThanOrEqual(REVIEW_MAX_BYTES);
+
+  const reconcile: ReconcileReport = { source: "http://127.0.0.1:9", measured: 1_000_000, closed: 1_000_000, stillDue: 1_000_000,
+    written: Array.from({ length: 300 }, (_, i) => ({ decision: `${long}${i}`, symbol: long, what: "horizon" as const, k: 250, pct: -123456.78 })),
+    refused: Array.from({ length: 300 }, () => ({ market: long, symbol: long, why: wide(5000) })),
+    unmeasured: Array.from({ length: 300 }, (_, i) => ({ decision: `${long}${i}`, why: "no symbol" as const })) };
+  const reconcileOf = reconcileText(reconcile);
+  expect(Buffer.byteLength(reconcileOf)).toBeLessThanOrEqual(RECONCILE_MAX_BYTES);
+  const holding = statusText({ ...status, chains: status.chains.map((x) => ({ ...x, ok: true })) });
+  expect(Buffer.byteLength(holding)).toBeLessThanOrEqual(STATUS_MAX_BYTES);
+  for (const text of [statusOf, holding, reviewOf, reconcileOf]) expect(text).not.toContain(WIDE_ESCAPED.repeat(URL_SHOWN + 1));
 });
 
 /** Characters JSON leaves raw that hide or reorder text: DEL, a C1 control, a line separator, a bidi override, a tag. */

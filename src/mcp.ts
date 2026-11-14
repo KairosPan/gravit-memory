@@ -12,6 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { isApplying } from "./cards.js";
 import { MemoryError } from "./errors.js";
 import { resolveHome } from "./home.js";
 import { openMemory, type CardState, type Memory, type Status } from "./index.js";
@@ -229,7 +230,7 @@ export function buildServer(memory: Memory, as: string, opts?: { onFault?: (err:
  */
 export function agentsStatus(s: Status): Status {
   const ownerHolds = s.chains.find((c) => c.file === "owner.jsonl")?.ok !== false;
-  const cards = s.cards.map((c): CardState => (ownerHolds && (c.state === "armed" || c.state === "changed")
+  const cards = s.cards.map((c): CardState => (isApplying(c, ownerHolds)
     ? c : { id: c.id, state: c.state, ...(c.fault !== undefined ? { fault: c.fault } : {}) }));
   return { ...s, cards };
 }

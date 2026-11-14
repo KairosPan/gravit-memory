@@ -14,6 +14,8 @@ export const URL_SHOWN = 200, WHY_SHOWN = 160;
 export const IDENT_MAX = 64;
 /** How many measured decisions, ids, written lines, refusals and unmeasured decisions a list of theirs shows once it yields. */
 export const MEASURED_SHOWN = 10, IDS_SHOWN = 10, WRITTEN_SHOWN = 20, REFUSALS_SHOWN = 10, UNMEASURED_SHOWN = 10;
+/** The status's text: items of a list in a card's lines, a card's facts once they yield, ids of the cards not shown. */
+export const CARD_LIST_SHOWN = 10, CARD_FACTS_SHOWN = 8, CARDS_NAMED = 10;
 export const DECISIONS_LIMIT_MAX = 200, DECISIONS_LIMIT_DEFAULT = 50;
 export const SHOW_CARDS = 5, SHOW_UNTOLD = 5, SHOW_SAME = 3, SHOW_LIKE = 3, THESIS_SHOWN = 160;
 export const RECONCILE_EVERY_MINUTES = 60, EVERY_MINUTES_MAX = 1440;
