@@ -10,6 +10,8 @@ export const RECALL_MAX_BYTES = 4000, RECALL_STRUCT_MAX_BYTES = 16_000, INSTRUCT
 export const STATUS_MAX_BYTES = 6000, REVIEW_MAX_BYTES = 8000, RECONCILE_MAX_BYTES = 2000;
 /** What the status, review and reconcile texts show at most: characters of a price source's URL and of a refusal's why. */
 export const URL_SHOWN = 200, WHY_SHOWN = 160;
+/** The longest value from the store a text prints unquoted, as an identifier: an id, a name, a symbol, a time. */
+export const IDENT_MAX = 64;
 /** How many measured decisions, ids, written lines, refusals and unmeasured decisions a list of theirs shows once it yields. */
 export const MEASURED_SHOWN = 10, IDS_SHOWN = 10, WRITTEN_SHOWN = 20, REFUSALS_SHOWN = 10, UNMEASURED_SHOWN = 10;
 export const DECISIONS_LIMIT_MAX = 200, DECISIONS_LIMIT_DEFAULT = 50;

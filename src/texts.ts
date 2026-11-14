@@ -9,13 +9,15 @@
 // The status's text never holds the words, the definitions or the checks of a card that does not apply: such a card
 // is its id, its state and its fault, whatever Status it is handed. A changed card applies as armed, and its content
 // is the armed copy's (src/cards.ts parses the armed bytes). An applying card's words are never cut; when the cap
-// forces it, whole cards go from the end, with their facts, and are counted.
-import { IDS_SHOWN, LESSON_ID, MEASURED_SHOWN, RECONCILE_MAX_BYTES, REFUSALS_SHOWN, REVIEW_MAX_BYTES, STATUS_MAX_BYTES,
+// forces it, whole cards go from the end, with their facts, and are counted. An id, a name, a symbol, a market, a
+// state or an operator from the store is printed unquoted only when it has its shape (`ident`, src/render.ts).
+import { FACT_NAME, IDS_SHOWN, LESSON_ID, MEASURED_SHOWN, RECONCILE_MAX_BYTES, REFUSALS_SHOWN, REVIEW_MAX_BYTES, STATUS_MAX_BYTES,
   UNMEASURED_SHOWN, URL_SHOWN, WHY_SHOWN, WRITTEN_SHOWN } from "./limits.js";
 import type { CardState } from "./cards.js";
 import type { ReconcileReport, Written } from "./reconcile.js";
-import { cutTo, decisions, pct, quote, short } from "./render.js";
+import { ACTION, cutTo, decisions, ID_WORD, ident, pct, PROPOSAL_ID, quote, SAYS, short, WRITER } from "./render.js";
 import type { Review, Status } from "./review.js";
+import { MARKET, SYMBOL } from "./schema.js";
 import type { Card, Check } from "./types.js";
 
 const T = {
@@ -151,10 +153,9 @@ function capped<X>(xs: readonly X[], cap: number, line: (x: X) => string[],
   return lines;
 }
 
-/** A card's id as given, or quoted when it is not a lesson id (a refused file's name). */
-function idOf(id: string): string {
-  return LESSON_ID.test(id) ? id : quote(id);
-}
+/** The shapes of a card's state, a check's operator, a proposal's what and why a decision is not measured. */
+const STATE = /^(armed|changed|broken|unarmed|retired|refused)$/, OP = /^(in|>=|>|<=|<|==|!=)$/;
+const WHAT = /^(new|change|retire)$/, NOT_MEASURED = /^no (symbol|market)$/;
 
 // ---- the status ------------------------------------------------------------------------------------------------
 
@@ -194,7 +195,7 @@ function renderStatus(v: StatusView, shape: StatusShape): string {
   const shown = new Set(v.applying.map((c) => c.id));
   const facts = s.facts.filter((f) => shown.has(f.card));
   for (const f of facts) {
-    out.push(`- ${f.card}: ${f.fact}, ${T.definition} ${quote(short(f.definition, shape.cut))}, ${T.checks} ${checks(f.checked)}`);
+    out.push(`- ${ident(f.card, LESSON_ID)}: ${ident(f.fact, FACT_NAME)}, ${T.definition} ${quote(short(f.definition, shape.cut))}, ${T.checks} ${checks(f.checked)}`);
   }
   if (more > 0) out.push(T.factsNotShown);
   else if (facts.length === 0) out.push(T.none);
@@ -202,7 +203,7 @@ function renderStatus(v: StatusView, shape: StatusShape): string {
   out.push(T.othersHead);
   if (v.others.length === 0) out.push(T.none);
   else if (shape.others) for (const c of v.others) out.push(otherCard(c));
-  else for (const [state, n] of countBy(v.others.map((c) => c.state))) out.push(`- ${state}: ${n}`);
+  else for (const [state, n] of countBy(v.others.map((c) => c.state))) out.push(`- ${ident(state, STATE)}: ${n}`);
 
   out.push(T.tagsHead);
   if (s.tags.length === 0) out.push(T.none);
@@ -242,12 +243,13 @@ function applyingCard(c: Applying): string[] {
   if (card.scope?.symbols !== undefined) scope.push(`${T.symbols} ${card.scope.symbols.map(quote).join(", ")}`);
   const scoped = scope.length > 0 ? `, ${T.scope} ${scope.join("; ")}` : "";
   const changed = c.state === "changed" ? ` ${T.changed}` : "";
-  return [`- ${strength} ${card.id}, ${T.says} ${card.says} ${T.on} ${card.actions.join(", ")}${scoped}${changed}`,
+  return [`- ${strength} ${ident(card.id, LESSON_ID)}, ${T.says} ${ident(card.says, SAYS)} ${T.on} `
+    + `${card.actions.map((a) => ident(a, ACTION)).join(", ")}${scoped}${changed}`,
     `  ${T.ownersWords} ${quote(card.words)}`];
 }
 
 function otherCard(c: CardState): string {
-  return `- ${idOf(c.id)} ${c.state}${c.fault !== undefined ? `, ${T.fault} ${quote(c.fault)}` : ""}`;
+  return `- ${ident(c.id, LESSON_ID)} ${ident(c.state, STATE)}${c.fault !== undefined ? `, ${T.fault} ${quote(c.fault)}` : ""}`;
 }
 
 /** A fact's checks: each operator and value, the value as JSON quotes it. */
@@ -255,7 +257,7 @@ function checks(list: Check[]): string {
   if (list.length === 0) return T.noCheck;
   const value = (x: Check["value"]): string => (Array.isArray(x) ? `[${x.map(value).join(", ")}]`
     : typeof x === "string" ? quote(x) : String(x));
-  return list.map((ch) => `${ch.op} ${value(ch.value)}`).join("; ");
+  return list.map((ch) => `${ident(ch.op, OP)} ${value(ch.value)}`).join("; ");
 }
 
 function countBy(xs: string[]): Array<[string, number]> {
@@ -298,11 +300,11 @@ function renderReview(r: Review, shape: ReviewShape): string {
     ...(shown.length > 0 ? decisions(shown, true, shape.cut) : [])]);
   part(T.lessonsHead, capped(r.cards, shape.ids, (c) => reviewCard(c, shape.medians)));
   part(T.tagsSharedHead, capped(r.tags_shared, shape.ids, (t) => [`- ${quote(t.tag)} ${t.decisions.length} ${T.decisionsWord}`]));
-  part(T.pastHorizonHead, capped(r.past_horizon, shape.ids, (id) => [`- ${id}`]));
+  part(T.pastHorizonHead, capped(r.past_horizon, shape.ids, (id) => [`- ${ident(id, ID_WORD)}`]));
   out.push(T.withoutWrongIfHead, `- ${T.decisionsCount} ${r.without_wrong_if}`);
-  part(T.voidedHead, capped(r.voided, shape.ids, (v) => [`- ${v.decision} ${T.by} ${v.by}`]));
+  part(T.voidedHead, capped(r.voided, shape.ids, (v) => [`- ${ident(v.decision, ID_WORD)} ${T.by} ${ident(v.by, WRITER)}`]));
   part(T.proposalsHead, capped(r.proposals, shape.ids, (p) =>
-    [`- ${p.id}: ${p.what} ${T.lesson} ${p.lesson}, ${T.by} ${p.by}, ${T.reason} ${quote(short(p.reason, shape.cut))}`]));
+    [`- ${ident(p.id, PROPOSAL_ID)}: ${ident(p.what, WHAT)} ${T.lesson} ${ident(p.lesson, LESSON_ID)}, ${T.by} ${ident(p.by, WRITER)}, ${T.reason} ${quote(short(p.reason, shape.cut))}`]));
   return out.join("\n");
 }
 
@@ -310,7 +312,7 @@ function reviewCard(c: Review["cards"][number], medians: boolean): string[] {
   const o = c.record.owner;
   const g = c.record.agents;
   const flags = [...(c.quiet ? [T.quiet] : []), ...(c.overridden_often ? [T.overriddenOften] : [])];
-  const lines = [`- ${c.id}: ${T.ownerSide} ${T.fired} ${o.fired}, ${T.followed} ${o.followed}, ${T.overridden} ${o.overridden}, `
+  const lines = [`- ${ident(c.id, LESSON_ID)}: ${T.ownerSide} ${T.fired} ${o.fired}, ${T.followed} ${o.followed}, ${T.overridden} ${o.overridden}, `
     + `${T.seen} ${o.seen}, ${T.backfilled} ${o.backfilled}, ${T.noDecision} ${o.no_decision} · ${T.agentsSide} `
     + `${T.followed} ${g.followed}, ${T.overridden} ${g.overridden}, ${T.seen} ${g.seen}`
     + (flags.length > 0 ? `; ${flags.join("; ")}` : "")];
@@ -362,11 +364,11 @@ function renderReconcile(r: ReconcileReport, shape: ReconcileShape): string {
   return [
     `${T.measured} ${r.measured}, ${T.closedCount} ${r.closed}, ${T.stillDue} ${r.stillDue}, ${T.refusedCount} ${r.refused.length}, `
       + `${T.unmeasured} ${r.unmeasured.length}.`,
-    ...capped(r.written, shape.written, (w) => [`- ${T.wrote} ${w.decision} ${w.symbol}: ${writtenWhat(w)}`],
+    ...capped(r.written, shape.written, (w) => [`- ${T.wrote} ${ident(w.decision, ID_WORD)} ${ident(w.symbol, SYMBOL)}: ${writtenWhat(w)}`],
       [T.writtenNotShownOne, T.writtenNotShown]),
-    ...capped(r.refused, shape.refused, (x) => [`- ${T.refused} ${x.symbol} ${T.in} ${x.market}: ${quote(cutTo(x.why, WHY_SHOWN))}`],
+    ...capped(r.refused, shape.refused, (x) => [`- ${T.refused} ${ident(x.symbol, SYMBOL)} ${T.in} ${ident(x.market, MARKET)}: ${quote(cutTo(x.why, WHY_SHOWN))}`],
       [T.refusalNotShown, T.refusalsNotShown]),
-    ...capped(r.unmeasured, shape.unmeasured, (u) => [`- ${T.notMeasured} ${u.decision}: ${u.why}`],
+    ...capped(r.unmeasured, shape.unmeasured, (u) => [`- ${T.notMeasured} ${ident(u.decision, ID_WORD)}: ${ident(u.why, NOT_MEASURED)}`],
       [T.unmeasuredNotShown, T.unmeasuredNotShown]),
   ].join("\n");
 }

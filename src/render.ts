@@ -11,9 +11,23 @@
 // The answer's structure is the text's, never more: what the text leaves out is left out of it, what it cuts is cut,
 // a record's case lists hold only the cases the text names (its counts stay whole), and the whole answer is held
 // within RECALL_STRUCT_MAX_BYTES as the text is within RECALL_MAX_BYTES.
-import { RECALL_MAX_BYTES, RECALL_STRUCT_MAX_BYTES } from "./limits.js";
+//
+// A value from the store printed unquoted (an id, a writer's name, a symbol, a market, an action, a date, a fact's
+// name) passes `ident`: printed as it is only when it has its shape, else quoted. The command line and the tools'
+// texts (src/texts.ts) use the same guard and the same shapes.
+import { AGENT_NAME, FACT_NAME, IDENT_MAX, LESSON_ID, RECALL_MAX_BYTES, RECALL_STRUCT_MAX_BYTES } from "./limits.js";
 import type { Case, CardRecord, Figure } from "./records.js";
 import type { AppliedCard, House, PastDecision, RecallAnswer, UntoldCard } from "./recall.js";
+import { ACTIONS, MARKET, SYMBOL } from "./schema.js";
+
+/** The shapes of the values a text prints unquoted; a decision's id in a tool's text is a word of the id's letters. */
+export const DECISION_ID = /^d-\d{8}-[0-9a-f]{8}$/;
+export const ID_WORD = /^[a-z][a-z0-9-]{1,63}$/;
+export const PROPOSAL_ID = /^p-\d{8}-[0-9a-f]{8}$/;
+export const ISO_TIME = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}))?$/;
+export const WRITER = new RegExp(`^owner$|${AGENT_NAME.source}`);
+export const ACTION = new RegExp(`^(${ACTIONS.join("|")})$`);
+export const SAYS = /^(dont|do|careful)$/;
 
 const F = {
   applyHead: "Lessons that apply:",
@@ -164,7 +178,8 @@ function applied(card: AppliedCard, h: House, s: Shape): string[] {
   const strength = card.strength === "red-line" ? F.redLine : F.caveat;
   const changed = h.cards_changed.includes(card.id) ? ` ${F.changed}` : "";
   return [
-    `- ${strength} ${card.id}, ${F.says} ${card.says} ${F.on} ${card.actions.join(", ")}${changed}`,
+    `- ${strength} ${ident(card.id, LESSON_ID)}, ${F.says} ${ident(card.says, SAYS)} ${F.on} `
+      + `${card.actions.map((a) => ident(a, ACTION)).join(", ")}${changed}`,
     `  ${F.ownersWords} ${quote(card.words)}`,
     ...record(card.record, s.fullRecords),
   ];
@@ -196,13 +211,14 @@ function record(r: CardRecord, full: boolean): string[] {
 }
 
 function caseHead(c: Case): string {
-  return [c.date, c.symbol, c.action, c.decision].filter((x) => x !== undefined).join(" ");
+  return [ident(c.date, ISO_TIME), c.symbol === undefined ? undefined : ident(c.symbol, SYMBOL), ident(c.action, ACTION),
+    ident(c.decision, ID_WORD)].filter((x) => x !== undefined).join(" ");
 }
 
 function untold(card: UntoldCard, cut: boolean): string[] {
-  return [`- ${card.id}`, ...card.needs.map((n) => (n.what === "market"
+  return [`- ${ident(card.id, LESSON_ID)}`, ...card.needs.map((n) => (n.what === "market"
     ? `  ${F.lacksMarket}`
-    : `  ${F.lacksFact} ${n.fact}, ${F.definition} ${quote(short(n.definition, cut))}`))];
+    : `  ${F.lacksFact} ${ident(n.fact, FACT_NAME)}, ${F.definition} ${quote(short(n.definition, cut))}`))];
 }
 
 /** Past decisions as the recall writes them: date, whose, action, symbol, writer, id, the thesis, wrong_if, figures. */
@@ -211,8 +227,9 @@ export function decisions(list: PastDecision[], shown: boolean, cut: boolean): s
   if (list.length === 0) return [F.none];
   return list.flatMap((d) => {
     const whose = d.whose === "owner" ? F.ownersDecision : F.agentsDecision;
-    const head = [d.date, whose, d.action, d.symbol].filter((x) => x !== undefined).join(" ");
-    const lines = [`- ${head}, ${F.by} ${d.by}, ${d.id}${d.backfilled ? ` (${F.backfilled})` : ""}`,
+    const head = [ident(d.date, ISO_TIME), whose, ident(d.action, ACTION), d.symbol === undefined ? undefined : ident(d.symbol, SYMBOL)]
+      .filter((x) => x !== undefined).join(" ");
+    const lines = [`- ${head}, ${F.by} ${ident(d.by, WRITER)}, ${ident(d.id, ID_WORD)}${d.backfilled ? ` (${F.backfilled})` : ""}`,
       `  ${F.record} ${quote(short(d.thesis, cut))}`];
     if (d.wrong_if !== undefined) lines.push(`  ${d.at_entry ? F.atEntry : F.wrongIf} ${quote(short(d.wrong_if, cut))}`);
     lines.push(`  ${F.soFar} ${figures(d.figures)}`);
@@ -233,7 +250,7 @@ function house(h: House): string[] {
 }
 
 function names(ids: string[]): string {
-  const shown = ids.slice(0, HOUSE_LIST).join(", ");
+  const shown = ids.slice(0, HOUSE_LIST).map((id) => ident(id, LESSON_ID)).join(", ");
   return ids.length > HOUSE_LIST ? `${shown}, ${F.andMore} ${ids.length - HOUSE_LIST} ${F.moreTail}` : shown;
 }
 
@@ -267,6 +284,20 @@ export function cutTo(s: string, n: number): string {
  */
 export function quote(s: string): string {
   return visible(JSON.stringify(s));
+}
+
+/** Whether a value from the store may be printed unquoted: a string of at most IDENT_MAX characters its shape takes. */
+export function fitsShape(value: unknown, shape: RegExp): value is string {
+  return typeof value === "string" && value.length <= IDENT_MAX && shape.test(value);
+}
+
+/**
+ * A value from the store printed where a text's own words stand: itself when it fits its shape, else quoted, and cut
+ * to IDENT_MAX characters first, so a line written by hand can neither pass for the text's own nor run it long.
+ */
+export function ident(value: unknown, shape: RegExp): string {
+  if (fitsShape(value, shape)) return value;
+  return quote(cutTo(typeof value === "string" ? value : String(JSON.stringify(value)), IDENT_MAX));
 }
 
 /** C0 and C1 controls but the newline (tab included), DEL, format characters (bidi, zero-width, BOM), separators. */

@@ -31,8 +31,7 @@ import { openMemory, type CardRecord, type CardState, type DecisionView, type Fi
   type Review, type Status } from "./index.js";
 import { AGENT_NAME, FACT_NAME, LESSON_ID, REASON_MAX } from "./limits.js";
 import { runMcp } from "./mcp.js";
-import { UNSEEN, visible } from "./render.js";
-import { ACTIONS } from "./schema.js";
+import { ACTION, DECISION_ID, fitsShape, ISO_TIME, PROPOSAL_ID, UNSEEN, visible, WRITER } from "./render.js";
 import type { Card, Deps, ProposalLine } from "./types.js";
 
 export { visible } from "./render.js";
@@ -66,13 +65,8 @@ const COMMANDS: Record<string, Command> = {
 
 /** The name reconcile writes its outcome lines under when the command line runs it. */
 const RECONCILER = "command-line";
-const DECISION_ID = /^d-\d{8}-[0-9a-f]{8}$/;
-const PROPOSAL_ID = /^p-\d{8}-[0-9a-f]{8}$/;
 const LINE_ID = /^[a-z]-\d{8}-[0-9a-f]{8}$/;
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}))?$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const WRITER = new RegExp(`^owner$|${AGENT_NAME.source}`);
-const ACTION = new RegExp(`^(${ACTIONS.join("|")})$`);
 const WHOSE = /^(owner|agent)$/;
 const DEFAULT_COLUMNS = 80;
 /** The narrowest terminal an owner's act runs on: the fence and some text on each row. */
@@ -105,9 +99,9 @@ function field(label: string, value: string): string[] {
   return [`${label}:`, fence(value)];
 }
 
-/** A value from the home that may stand on a line of the tool's: itself when it is a string the pattern takes, else "?". */
+/** A value from the home that may stand on a line of the tool's: itself when it fits its shape (src/render.ts), else "?". */
 function ident(value: unknown, pattern: RegExp): string {
-  return typeof value === "string" && value.length <= 64 && pattern.test(value) ? value : "?";
+  return fitsShape(value, pattern) ? value : "?";
 }
 
 /** The terminal's width: the Io's when it gives a sound one, else 80. Never more than the terminal reports. */

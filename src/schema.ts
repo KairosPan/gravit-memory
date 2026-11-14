@@ -24,9 +24,10 @@ const action = z.enum(ACTIONS);
 const whose = z.enum(["owner", "agent"]);
 const tri = z.enum(["yes", "no", "unclear"]);
 const isoTime = z.iso.datetime({ offset: true, error: "must be an ISO time, such as 2026-03-02T15:00:00Z" });
-const symbol = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._^=-]{0,31}$/,
-  "must be 1 to 32 letters, digits or . _ ^ = -, beginning with a letter or a digit");
-const market = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/, "must be 1 to 32 letters, digits, underscores or dashes");
+/** A symbol's shape and a market's, as an input gives them. */
+export const SYMBOL = /^[A-Za-z0-9][A-Za-z0-9._^=-]{0,31}$/, MARKET = /^[A-Za-z0-9_-]{1,32}$/;
+const symbol = z.string().regex(SYMBOL, "must be 1 to 32 letters, digits or . _ ^ = -, beginning with a letter or a digit");
+const market = z.string().regex(MARKET, "must be 1 to 32 letters, digits, underscores or dashes");
 const factName = z.string().regex(FACT_NAME, "must be lower-case letters, digits or underscores, at most 40");
 const scalar = z.union([z.number(), z.string(), z.boolean()], { error: "must be a number, a string or a boolean" });
 const factValue = z.union([z.number(), chars(FACT_SOURCE_MAX, 0), z.boolean()],
