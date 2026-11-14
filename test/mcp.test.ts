@@ -6,10 +6,11 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { DEFAULT_CONFIG } from "../src/home.js";
-import { openMemory, type Memory, type RecallAnswer } from "../src/index.js";
+import { openMemory, type Memory, type RecallAnswer, type ReconcileReport, type Review, type Status } from "../src/index.js";
 import { INSTRUCTIONS_MAX_BYTES } from "../src/limits.js";
 import { readLog } from "../src/log.js";
-import { INSTRUCTIONS, TOOL_NAMES, buildServer, runMcp } from "../src/mcp.js";
+import { INSTRUCTIONS, TOOL_NAMES, agentsStatus, buildServer, runMcp } from "../src/mcp.js";
+import { reconcileText, reviewText, statusText } from "../src/texts.js";
 import type { RecallLine } from "../src/types.js";
 import { DAY, candleStub, cboeAnswer, clock, tempHome, weekdays, writeCard } from "./helpers.js";
 
@@ -369,4 +370,41 @@ test("a fault inside is one line on the server's stderr, and the fixed sentence 
   stdin.end();
   expect(await run).toBe(0);
   expect(err.split("\n").filter((l) => l !== "")).toEqual([expect.stringMatching(/^gravit-memory mcp: a fault inside memory_status: /)]);
+});
+
+test("a host that shows text only learns the facts from memory_status", async () => {
+  await writeCard(home);
+  await memory.owner.arm(ID);
+  const r = await answer(one, "memory_status");
+  expect(r.isError).toBeFalsy();
+  expect(textOf(r)).toContain("change_5d_pct");
+  expect(textOf(r)).toContain(`"today's close over the close five sessions earlier, minus 1, in percent"`);
+  expect(textOf(r)).toContain(`"No new position in a name that ran 20% in five sessions."`);
+  expect(r.structuredContent).toEqual(JSON.parse(JSON.stringify(agentsStatus(await memory.status()))));   // as v0.1 gave it
+  expect(textOf(r)).toBe(statusText(r.structuredContent as unknown as Status));
+});
+
+test("memory_review and memory_reconcile answer their material as text", async () => {
+  await call(one, "memory_record", nvda);
+  const review = await answer(one, "memory_review", { since: "2026-03-01" });
+  expect(textOf(review)).toBe(reviewText(review.structuredContent as unknown as Review));
+  expect(textOf(review)).toContain("Since 2026-03-01T00:00:00.000Z.");
+  expect(textOf(review)).toContain("Without wrong_if since:\n- decisions: 1");
+
+  const none = await answer(one, "memory_reconcile");
+  expect(textOf(none)).toBe("No price source is set: nothing was measured.");
+  const stub = await candleStub();
+  await useSource(stub.url);
+  stub.set("NVDA", cboeAnswer(weekdays("2026-03-02", [100, 101, 102])));
+  stub.set("SPY", cboeAnswer(weekdays("2026-03-02", [500, 501, 502])));
+  c.set("2026-03-05T12:00:00Z");
+  const run = await answer(one, "memory_reconcile");
+  const report = run.structuredContent as unknown as ReconcileReport;
+  expect(report.written.length).toBeGreaterThan(0);
+  expect(textOf(run)).toBe(reconcileText(report));
+  expect(textOf(run)).toContain(`- wrote ${report.written[0]!.decision} NVDA: `);
+  c.advance(60_000);
+  const fresh = await answer(one, "memory_reconcile");
+  expect(textOf(fresh)).toBe(reconcileText(fresh.structuredContent as unknown as ReconcileReport));
+  expect(textOf(fresh)).toContain("it will be asked again after");
 });

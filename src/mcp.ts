@@ -4,7 +4,8 @@
 // The core parses every input strictly and names the field it refuses, so the tools hand the arguments through
 // untouched: each tool publishes its input's JSON schema, flat (an object, never a top-level oneOf, which hosts that
 // pass schemas to a model refuse) and with every field described, but parses nothing itself (see `door`). A refusal is an
-// answer (isError, the core's sentence), never a protocol error. Only memory_reconcile reaches the network, through
+// answer (isError, the core's sentence), never a protocol error. Each answer's text carries its content (src/texts.ts),
+// for a host that shows its model the text alone. Only memory_reconcile reaches the network, through
 // the Memory's own fetch.
 import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -16,6 +17,7 @@ import { resolveHome } from "./home.js";
 import { openMemory, type CardState, type Memory, type Status } from "./index.js";
 import { AGENT_NAME } from "./limits.js";
 import { amendInput, decisionInput, parseInput, proposalInput, recallInput } from "./schema.js";
+import { reconcileText, reviewText, statusText } from "./texts.js";
 import type { Deps } from "./types.js";
 
 export const TOOL_NAMES = ["memory_recall", "memory_record", "memory_amend", "memory_propose", "memory_reconcile",
@@ -196,10 +198,7 @@ export function buildServer(memory: Memory, as: string, opts?: { onFault?: (err:
     async (args) => {
       parseInput(noFields, args, "a reconcile");
       const r = await memory.reconcile(as);
-      const text = r.source === null
-        ? "No price source is set: nothing was measured."
-        : `Measured ${r.measured}, closed ${r.closed}, still due ${r.stillDue}, refused ${r.refused.length}, unmeasured ${r.unmeasured.length}.`;
-      return { structured: r as unknown as Structured, text };
+      return { structured: r as unknown as Structured, text: reconcileText(r) };
     });
 
   tool("memory_review",
@@ -208,9 +207,7 @@ export function buildServer(memory: Memory, as: string, opts?: { onFault?: (err:
     async (args) => {
       const { since } = parseInput(reviewInput, args, "a review");
       const r = await memory.review(since);
-      const from = since === undefined ? "From the start" : `Since ${since}`;
-      return { structured: r as unknown as Structured,
-        text: `${from}: ${r.measured.length} decisions measured, ${r.cards.length} lessons with a record, ${r.past_horizon.length} decisions past their horizon, ${r.proposals.length} proposals waiting.` };
+      return { structured: r as unknown as Structured, text: reviewText(r) };
     });
 
   tool("memory_status",
@@ -219,11 +216,7 @@ export function buildServer(memory: Memory, as: string, opts?: { onFault?: (err:
     async (args) => {
       parseInput(noFields, args, "a status");
       const s = agentsStatus(await memory.status());
-      const armed = s.cards.filter((c) => c.state === "armed").length;
-      const broken = s.chains.filter((c) => !c.ok).map((c) => c.file);
-      const chains = broken.length === 0 ? "every chain holds" : `broken chains: ${broken.join(", ")}`;
-      return { structured: s as unknown as Structured,
-        text: `${s.cards.length} lessons, ${armed} armed; ${s.facts.length} facts asked by them; ${chains}.` };
+      return { structured: s as unknown as Structured, text: statusText(s) };
     });
 
   return server;
@@ -234,7 +227,7 @@ export function buildServer(memory: Memory, as: string, opts?: { onFault?: (err:
  * owner.jsonl's chain holds) with its armed copy's content; any other card as its id, its state and its fault alone,
  * so no words the owner has not armed reach an agent. The core and the command line keep the full Status.
  */
-function agentsStatus(s: Status): Status {
+export function agentsStatus(s: Status): Status {
   const ownerHolds = s.chains.find((c) => c.file === "owner.jsonl")?.ok !== false;
   const cards = s.cards.map((c): CardState => (ownerHolds && (c.state === "armed" || c.state === "changed")
     ? c : { id: c.id, state: c.state, ...(c.fault !== undefined ? { fault: c.fault } : {}) }));

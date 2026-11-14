@@ -57,6 +57,8 @@ The name is a label, not a proof: see "What is protected" below.
 Every agent connected to a home reads the whole record: every decision, every lesson, whoever wrote it. Connect only
 agents you would show all of it to.
 
+A host that shows its model only a tool's text loses nothing: each tool's text carries the content of its answer.
+
 `gravit-memory mcp` serves the agent's door until its input closes. It also reads `GRAVIT_MEMORY_HOME`, or takes
 `--home <path>`.
 
@@ -65,9 +67,12 @@ agents you would show all of it to.
 The server gives the agent short instructions of its own on when to call each tool.
 
 - `memory_status` — which facts the owner's lessons need and how each is defined, and the state of the memory.
-  A card that applies is given as armed; any other is given by its id, state and fault, never its words.
+  A card that applies is given as armed; any other is given by its id, state and fault, never its words. Its text
+  carries the same content, within 6,000 bytes: the lessons that apply in the owner's words, each fact with its
+  definition and checks, the other lessons, the tags in use and the price source.
 - `memory_reconcile` — measures registered decisions against the price source's daily closes; called when work
-  starts.
+  starts. Its text, within 2,000 bytes, says each line it wrote, each refusal and why, or when the source was asked
+  and when it will be asked again.
 - `memory_recall` — called before recommending, placing or advising on a trade, or advising to hold or stay out:
   given the actions that might be taken and the facts at hand, it answers the lessons that apply with their record,
   the lessons it cannot tell without a missing fact, and past decisions on the same name.
@@ -78,7 +83,7 @@ The server gives the agent short instructions of its own on when to call each to
 - `memory_propose` — proposes a new lesson, a change to one, or its retirement, with a reason and evidence. It waits
   for the owner.
 - `memory_review` — the review's material: decisions measured since a date, each lesson's record, decisions past
-  their horizon, proposals waiting.
+  their horizon, proposals waiting. Its text carries the same material, within 8,000 bytes.
 
 No tool arms, changes or retires a lesson. A decision is never changed either: what follows it is an amendment, a
 new line naming it.

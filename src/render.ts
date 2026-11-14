@@ -204,7 +204,8 @@ function untold(card: UntoldCard, cut: boolean): string[] {
     : `  ${F.lacksFact} ${n.fact}, ${F.definition} ${quote(short(n.definition, cut))}`))];
 }
 
-function decisions(list: PastDecision[], shown: boolean, cut: boolean): string[] {
+/** Past decisions as the recall writes them: date, whose, action, symbol, writer, id, the thesis, wrong_if, figures. */
+export function decisions(list: PastDecision[], shown: boolean, cut: boolean): string[] {
   if (!shown && list.length > 0) return [F.leftOut];
   if (list.length === 0) return [F.none];
   return list.flatMap((d) => {
@@ -242,16 +243,18 @@ function figures(list: Figure[]): string {
     + (f.vs_benchmark_pct !== null ? ` (${pct(f.vs_benchmark_pct)} ${F.vsBenchmark})` : "")).join(", ");
 }
 
-function pct(x: number): string {
+/** A percent figure, signed. */
+export function pct(x: number): string {
   return `${x > 0 ? "+" : ""}${x}%`;
 }
 
-function short(s: string, cut: boolean): string {
+/** Store text cut short with the mark, when cut is set and it is longer than CUT_TO characters. */
+export function short(s: string, cut: boolean): string {
   const chars = [...s];
   return cut && chars.length > CUT_TO ? `${chars.slice(0, CUT_TO).join("")}${F.cut}` : s;
 }
 
 /** Store text, quoted: JSON's escapes keep a quote or a newline in it from passing for the renderer's own. */
-function quote(s: string): string {
+export function quote(s: string): string {
   return JSON.stringify(s);
 }

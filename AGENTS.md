@@ -55,5 +55,6 @@ npm run build        # tsc to dist/; prepare runs it, so the package installs fr
 | `src/render.ts` | a recall's text, in its fixed order within 4,000 bytes |
 | `src/review.ts` | the review's material and the home's status |
 | `src/schema.ts` | every input's fields and limits, and the sentences that name a refused field |
+| `src/texts.ts` | the text of memory_status, memory_review and memory_reconcile: their content, each within its cap |
 | `src/types.ts` | the line, card and config types |
 | `src/verify.ts` | whether the home holds together: chains, ids pointed at, armed copies |
