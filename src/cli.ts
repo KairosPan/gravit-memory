@@ -16,14 +16,13 @@
 // the fence: so no part of a stored value reaches column zero, and none can pose as a question or a result, however
 // the terminal would have wrapped it. An owner's act refuses a terminal too narrow to show the fence and some text.
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Readable } from "node:stream";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { armedPath, lessonPath, parseCard, renderCard } from "./cards.js";
+import { armedPath, lessonPath, parseCard, readBytes, readCardFile, renderCard, unreadable } from "./cards.js";
 import { MemoryError } from "./errors.js";
 import { initHome, resolveHome } from "./home.js";
 import { sha256Hex } from "./ids.js";
@@ -251,8 +250,9 @@ async function arm(io: Door, memory: Memory, lesson: string): Promise<number> {
     io.out(NOTHING);
     return 1;
   }
-  const bytes = await readBytes(lessonPath(memory.home, lesson));       // read once: shown, then armed only if unchanged
+  const bytes = await readCardFile(lessonPath(memory.home, lesson));   // read once: shown, then armed only if unchanged
   if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
+  if (unreadable(bytes)) throw new MemoryError("E_CARD", `lesson ${lesson} cannot be armed: ${cannotRead(lesson, bytes)}`);
   const text = bytes.toString("utf8");
   const shownSha = sha256Hex(bytes);
   const card = parseCard(bytes, lesson);
@@ -281,8 +281,9 @@ async function retire(io: Door, memory: Memory, lesson: string, reason: string):
   }
   io.out(`Retire lesson ${lesson}, armed on ${armedOn(state)}:`);
   io.out("");
-  const armed = state.sha256 ? await readText(armedPath(memory.home, lesson, state.sha256)) : null;
-  io.out(armed === null ? "(its armed copy is missing)" : fence(armed.trimEnd()));
+  const armed = state.sha256 ? await readCardFile(armedPath(memory.home, lesson, state.sha256)) : null;
+  io.out(armed === null ? "(its armed copy is missing)" : unreadable(armed) ? "(its armed copy cannot be read)"
+    : fence(armed.toString("utf8").trimEnd()));
   io.out("");
   io.out(field("Reason", reason).join("\n"));
   if (!(await confirm(io, `retire ${lesson}`))) return 1;
@@ -317,7 +318,7 @@ async function reseal(io: Door, memory: Memory): Promise<number> {
   }
   io.out("These chains are broken, each where it breaks:");
   for (const ch of broken) {
-    const text = (await readText(join(memory.home, ch.file))) ?? "";
+    const text = (await readBytes(join(memory.home, ch.file)))?.toString("utf8") ?? "";
     io.out(`  ${ch.file}: broke at line ${ch.line ?? "?"}:`);
     io.out(fence(ch.line !== undefined ? text.split("\n")[ch.line - 1] ?? "" : ""));
   }
@@ -381,7 +382,12 @@ async function review(io: Door, memory: Memory): Promise<number> {
     await each(async () => {
       io.out("");
       const id = ident(s.id, LESSON_ID);
-      const bytes = await readBytes(lessonPath(memory.home, s.id));    // read once: shown, then armed only if unchanged
+      const bytes = await readCardFile(lessonPath(memory.home, s.id));  // read once: shown, then armed only if unchanged
+      if (unreadable(bytes)) {
+        io.out(`Lesson ${id} has changed since it was armed on ${armedOn(s)}, and its working file cannot be read: `
+          + `${cannotRead(id, bytes)} Nothing is armed for it; the armed copy still applies.`);
+        return;
+      }
       io.out(`Lesson ${id} has changed since it was armed on ${armedOn(s)}:`);
       io.out(await difference(memory.home, s, bytes === null ? null : bytes.toString("utf8")));
       const choice = (await io.ask("Answer arm, discard or skip: ")).trim();
@@ -505,22 +511,15 @@ function checkReason(reason: string): void {
   if ([...reason].length > REASON_MAX) throw new MemoryError("E_INPUT", `reason must hold 1 to ${REASON_MAX} characters.`);
 }
 
-async function readText(path: string): Promise<string | null> {
-  return (await readBytes(path))?.toString("utf8") ?? null;
-}
-
-async function readBytes(path: string): Promise<Buffer | null> {
-  try {
-    return await readFile(path);
-  } catch (err) {
-    if ((err as { code?: unknown }).code === "ENOENT") return null;
-    throw err;
-  }
+/** Why a card's working file cannot be read, as one sentence. */
+function cannotRead(id: string, file: { unreadable: "a directory" | "not readable" }): string {
+  return `lessons/${id}.md ${file.unreadable === "a directory" ? "is a directory, not a card file" : "cannot be read"}.`;
 }
 
 /** Lines only in the armed copy marked "-", lines only in the working file's text (as read) marked "+", all fenced. */
 async function difference(home: string, s: CardState, working: string | null): Promise<string> {
-  const armed = s.sha256 ? await readText(armedPath(home, s.id, s.sha256)) : null;
+  const copy = s.sha256 ? await readCardFile(armedPath(home, s.id, s.sha256)) : null;
+  const armed = Buffer.isBuffer(copy) ? copy.toString("utf8") : null;
   const linesOf = (t: string | null) => (t ?? "").replaceAll("\r\n", "\n").split("\n").filter((l, i, all) => i < all.length - 1 || l !== "");
   const a = linesOf(armed);
   const w = linesOf(working);
@@ -530,7 +529,7 @@ async function difference(home: string, s: CardState, working: string | null): P
     return xs.filter((x) => { const n = left.get(x) ?? 0; if (n > 0) { left.set(x, n - 1); return false; } return true; });
   };
   const out = [...only(a, w).map((l) => fence(`- ${l}`)), ...only(w, a).map((l) => fence(`+ ${l}`))];
-  if (armed === null) out.unshift("(its armed copy is missing)");
+  if (armed === null) out.unshift(unreadable(copy) ? "(its armed copy cannot be read)" : "(its armed copy is missing)");
   if (working === null) out.unshift(`(lessons/${ident(s.id, LESSON_ID)}.md is gone)`);
   return out.length > 0 ? out.join("\n") : "(no line differs; the bytes do, such as line ends)";
 }

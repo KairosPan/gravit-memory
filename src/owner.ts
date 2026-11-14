@@ -4,7 +4,7 @@
 // writes its file first and its owner.jsonl line, `by: "owner"`, after: a crash between leaves a file no line
 // names, never a line naming a file that is not there.
 import { chmod, writeFile } from "node:fs/promises";
-import { armedPath, cardStates, lessonPath, parseCard, readBytes } from "./cards.js";
+import { armedPath, cardStates, lessonPath, parseCard, readBytes, readCardFile, unreadable } from "./cards.js";
 import { MemoryError } from "./errors.js";
 import { assertHome } from "./home.js";
 import { sha256Hex } from "./ids.js";
@@ -16,13 +16,18 @@ const POSIX = process.platform !== "win32";
 
 /**
  * Arms lessons/<lesson>.md as it is now: copies its bytes to armed/ and writes the owner's arm line. With `expect`, the
- * SHA-256 of the text the owner was shown, the bytes read (the ones copied) must hash to it, else nothing is armed.
+ * SHA-256 of the text the owner was shown, the bytes read (the ones copied) must hash to it, else nothing is armed. A
+ * file that is a directory or cannot be read is refused as a file that is not a card is: E_CARD, saying why.
  */
 export async function arm(home: string, lesson: string, nowMs: number, expect?: string): Promise<{ sha256: string }> {
   checkLesson(lesson);
   await assertHome(home);
-  const bytes = await readBytes(lessonPath(home, lesson));
+  const bytes = await readCardFile(lessonPath(home, lesson));
   if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
+  if (unreadable(bytes)) {
+    throw new MemoryError("E_CARD", `card ${lesson} cannot be armed: lessons/${lesson}.md ${bytes.unreadable === "a directory"
+      ? "is a directory, not a card file" : "cannot be read"}.`);
+  }
   const sha256 = sha256Hex(bytes);
   if (expect !== undefined && sha256 !== expect) {
     throw new MemoryError("E_REFUSED", "the card changed while it was shown: nothing was armed.");

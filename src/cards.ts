@@ -149,7 +149,7 @@ export async function readCardFile(path: string): Promise<CardFile> {
 }
 
 /** Whether a card file read is one that could not be read. */
-function unreadable(file: CardFile): file is { unreadable: "a directory" | "not readable" } {
+export function unreadable(file: CardFile): file is { unreadable: "a directory" | "not readable" } {
   return file !== null && !Buffer.isBuffer(file);
 }
 
@@ -178,8 +178,13 @@ async function armedState(home: string, id: string, sha256: string, armedAt: str
   } catch (err) {
     return { ...base, state: "broken", fault: faultOf(err) };
   }
+  // A working file that cannot be read never disarms the card: it applies as armed, changed, with that as its fault.
   const working = await readCardFile(lessonPath(home, id));
-  const same = Buffer.isBuffer(working) && sha256Hex(working) === sha256;
+  if (unreadable(working)) {
+    return { ...base, card, state: "changed", fault: working.unreadable === "a directory" ? "Its working file is a directory, not a file."
+      : "Its working file cannot be read." };
+  }
+  const same = working !== null && sha256Hex(working) === sha256;
   return { ...base, card, state: same ? "armed" : "changed" };
 }
 

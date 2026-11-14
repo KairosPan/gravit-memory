@@ -245,8 +245,9 @@ reads, which no agent's tool reaches:
 
 - `lessons()`: every lesson card by id, with its state, the armed copy's text and SHA-256, the working file's text
   and SHA-256 (with why it is not a card, when it is not), and, for a card that applies, its record. A card file is
-  UTF-8 text: one that is not, or that cannot be read (a directory named like a card), is that card's fault, refused
-  as a working file and broken as an armed copy; no read throws for it.
+  UTF-8 text: one that is not, or that cannot be read (a directory named like a card), is that card's fault, and no
+  read throws for it. An unarmed card's file is refused and an armed copy is broken; an armed card whose working
+  file cannot be read keeps applying as armed, changed, and shows the fault.
 - `decisions({ symbol, before, limit })`: the decisions newest first, each with its amendments and its figures;
   `before` names a decision's id and pages back from it, `limit` is 1 to 200 (50 when absent), and `more` says
   whether older ones were left out. A void decision is listed and marked.

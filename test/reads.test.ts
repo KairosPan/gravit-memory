@@ -181,6 +181,24 @@ test("an armed copy that is a directory is a broken card", async () => {
   expect((await memory.recall("agent-one", ask)).house.cards_broken).toEqual([ID]);
 });
 
+test("an armed card whose working file is a directory still applies as armed, changed and with its fault", async () => {
+  await writeCard(home);
+  const { sha256 } = await memory.owner.arm(ID);
+  await rm(join(home, "lessons", `${ID}.md`));
+  await mkdir(join(home, "lessons", `${ID}.md`));
+  const fault = "Its working file is a directory, not a file.";
+
+  expect((await memory.recall("agent-one", ask)).applies.map((x) => x.id)).toEqual([ID]);
+  expect((await memory.status()).cards).toEqual([expect.objectContaining({ id: ID, state: "changed", fault })]);
+  const [lesson] = (await memory.lessons()).lessons;
+  expect(lesson).toMatchObject({ id: ID, state: "changed", fault, armed: { sha256, text: STAND_IN_CARD } });
+  expect(lesson).not.toHaveProperty("file");
+  expect(lesson!.record).not.toBeNull();
+  const refusal = await fails(memory.owner.arm(ID), "E_CARD");
+  expect(refusal).toContain("is a directory");
+  expect((await memory.status()).cards[0]).toMatchObject({ state: "changed", sha256 });
+});
+
 test("a broken owner log: every record is null", async () => {
   await writeCard(home);
   await writeCard(home, other("another-card"));

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -295,6 +295,38 @@ test("review: a changed card — arm or discard", async () => {
   expect(states[0]!.sha256).not.toBe(first);
   expect(states[0]!.card!.words).toContain("25%");
   expect(await readFile(join(home, "lessons", "second-look.md"), "utf8")).toBe(second);
+});
+
+test("an armed card whose working file is a directory: arm refuses in plain words, review says so and goes on", async () => {
+  const second = STAND_IN_CARD.replace(`id: ${ID}`, "id: second-look");
+  await writeCard(home);
+  await writeCard(home, second);
+  await memory.owner.arm(ID);
+  await memory.owner.arm("second-look");
+  await rm(join(home, "lessons", `${ID}.md`));
+  await mkdir(join(home, "lessons", `${ID}.md`));
+  await writeCard(home, second.replace("20%", "30%"));
+
+  const a = fakeIo({ isTTY: true });
+  expect(await runCli(["arm", ID, "--home", home], a, deps)).toBe(1);
+  expect(a.errors()).toMatch(/^gravit-memory:\n {2}\| .*is a directory/);
+  expect(a.errors()).not.toContain("failed:");
+  expect(a.asked).toEqual([]);
+
+  const r = fakeIo({ isTTY: true, answers: ["discard", "yes"] });
+  expect(await runCli(["review", "--home", home], r, deps)).toBe(0);
+  expect(r.errors()).toBe("");
+  expect(r.printed().split("\n").filter((l) => l.includes(ID) && l.includes("cannot be read"))).toHaveLength(1);
+  expect(r.asked).toHaveLength(2);
+  expect(r.asked[0]).toContain("+ No new position in a name that ran 30% in five sessions.");
+  expect(r.asked[1]).toContain("Type yes to discard the edit of second-look: ");
+  expect(await readFile(join(home, "lessons", "second-look.md"), "utf8")).toBe(second);
+
+  const l = fakeIo();
+  expect(await runCli(["lessons", "--home", home], l, deps)).toBe(0);
+  expect(l.printed()).toContain("  fault:\n  | Its working file is a directory, not a file.");
+  const owner = await readFile(join(home, "owner.jsonl"), "utf8");
+  expect(owner.split("\n").filter((x) => x.includes(`"act":"arm"`))).toHaveLength(2);   // the two arms before, no more
 });
 
 test("reseal shows where it broke", async () => {
