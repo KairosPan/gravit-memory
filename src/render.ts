@@ -254,15 +254,17 @@ function names(ids: string[]): string {
   return ids.length > HOUSE_LIST ? `${shown}, ${F.andMore} ${ids.length - HOUSE_LIST} ${F.moreTail}` : shown;
 }
 
+/** The measured figures: a horizon only when its change is a finite number, its benchmark figure only when it is one. */
 function figures(list: Figure[]): string {
-  const measured = list.filter((f) => f.change_pct !== null);
+  const measured = list.filter((f) => Number.isFinite(f.change_pct));
   if (measured.length === 0) return F.nothingMeasured;
-  return measured.map((f) => `${f.k}d ${pct(f.change_pct!)}`
-    + (f.vs_benchmark_pct !== null ? ` (${pct(f.vs_benchmark_pct)} ${F.vsBenchmark})` : "")).join(", ");
+  return measured.map((f) => `${f.k}d ${pct(f.change_pct)}`
+    + (Number.isFinite(f.vs_benchmark_pct) ? ` (${pct(f.vs_benchmark_pct)} ${F.vsBenchmark})` : "")).join(", ");
 }
 
-/** A percent figure, signed. */
-export function pct(x: number): string {
+/** A percent figure, signed, when it is a finite number; anything else is the frame's phrase for nothing measured. */
+export function pct(x: unknown): string {
+  if (typeof x !== "number" || !Number.isFinite(x)) return F.nothingMeasured;
   return `${x > 0 ? "+" : ""}${x}%`;
 }
 

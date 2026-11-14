@@ -45,27 +45,34 @@ export function occasionsOf(recalls: RecallLine[]): Occasion[] {
 
 /**
  * One figure per horizon, in order, from the first horizon line for the decision and k and its first leg line: the
- * change compounds the leg when one was taken, else it is the horizon line's own.
+ * change compounds the leg when one was taken, else it is the horizon line's own. A line whose numbers are not finite
+ * numbers (one written by hand) is no measurement: a horizon line whose change is not one, or a leg line whose leg is
+ * neither null nor one, is passed over as if it were not there; a benchmark figure that is not one is null.
  */
 export function figuresOf(decision: string, outcomes: OutcomeLine[], horizons: number[]): Figure[] {
   let leg: number | null = null;
-  const byK = new Map<number, { change_pct: number; vs_benchmark_pct?: number }>();
+  const byK = new Map<number, { change_pct: number; vs_benchmark_pct: number | null }>();
   let legSeen = false;
   for (const o of outcomes) {
     if (o.kind !== "outcome" || o.decision !== decision) continue;
-    if (o.what === "leg" && !legSeen) {
+    if (o.what === "leg" && !legSeen && (o.leg_pct === null || isFigure(o.leg_pct))) {
       legSeen = true;
       leg = o.leg_pct;
-    } else if (o.what === "horizon" && !byK.has(o.k)) {
-      byK.set(o.k, o);
+    } else if (o.what === "horizon" && !byK.has(o.k) && isFigure(o.change_pct)) {
+      byK.set(o.k, { change_pct: o.change_pct, vs_benchmark_pct: isFigure(o.vs_benchmark_pct) ? o.vs_benchmark_pct : null });
     }
   }
   return horizons.map((k) => {
     const h = byK.get(k);
     if (h === undefined) return { k, change_pct: null, vs_benchmark_pct: null };
     const change = leg === null ? h.change_pct : round2(((1 + leg / 100) * (1 + h.change_pct / 100) - 1) * 100);
-    return { k, change_pct: change, vs_benchmark_pct: h.vs_benchmark_pct ?? null };
+    return { k, change_pct: isFigure(change) ? change : null, vs_benchmark_pct: h.vs_benchmark_pct };
   });
+}
+
+/** Whether a value read from a line is a finite number. */
+function isFigure(x: unknown): x is number {
+  return typeof x === "number" && Number.isFinite(x);
 }
 
 /**
