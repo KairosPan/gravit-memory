@@ -1,10 +1,12 @@
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import type { Code } from "../src/errors.js";
 import { DEFAULT_CONFIG } from "../src/home.js";
 import { sha256Hex } from "../src/ids.js";
+import { appendLine } from "../src/log.js";
 import { openMemory, type Memory } from "../src/index.js";
+import type { OwnerLine } from "../src/types.js";
 import { STAND_IN_CARD, candleStub, cboeAnswer, clock, tempHome, weekdays, writeCard } from "./helpers.js";
 
 const ID = "no-chasing-after-a-run";
@@ -115,6 +117,68 @@ test("an empty file and one that is not UTF-8 are answered, not thrown", async (
   expect(bad!.file).not.toHaveProperty("card");
 
   expect(stand).toMatchObject({ id: ID, state: "unarmed", file: { text: STAND_IN_CARD } });
+});
+
+test("a working file that is not UTF-8 is a refused card, and cannot be armed", async () => {
+  await writeCard(home);
+  await memory.owner.arm(ID);
+  const latin1 = Buffer.concat([Buffer.from(other("not-utf8").replace("No new position", "No new position caf")),
+    Buffer.from([0xe9, 0x0a])]);
+  await writeFile(join(home, "lessons", "not-utf8.md"), latin1);
+
+  expect(await fails(memory.owner.arm("not-utf8", sha256Hex(latin1)), "E_CARD")).toContain("not UTF-8");
+  expect(await readdir(join(home, "armed"))).toHaveLength(1);                     // nothing was copied
+  const status = await memory.status();
+  expect(status.cards.find((x) => x.id === "not-utf8")).toEqual({ id: "not-utf8", state: "refused",
+    fault: "card not-utf8 is not UTF-8 text: a card file is read as UTF-8." });
+  const bad = (await memory.lessons()).lessons.find((l) => l.id === "not-utf8")!;
+  expect(bad).toMatchObject({ state: "refused", fault: "card not-utf8 is not UTF-8 text: a card file is read as UTF-8.",
+    record: null, file: { sha256: sha256Hex(latin1), fault: "card not-utf8 is not UTF-8 text: a card file is read as UTF-8." } });
+  expect(bad.file!.text.endsWith("\ufffd\n")).toBe(true);                          // decoded for showing
+  expect(bad.file).not.toHaveProperty("card");
+  expect(status.cards.find((x) => x.id === ID)).toMatchObject({ state: "armed" });
+});
+
+test("an armed copy that is not UTF-8 is a broken card", async () => {
+  const latin1 = Buffer.concat([Buffer.from(other("latin-card").replace("No new position", "No new position caf")),
+    Buffer.from([0xe9, 0x0a])]);
+  const sha256 = sha256Hex(latin1);
+  await writeFile(join(home, "lessons", "latin-card.md"), latin1);
+  await writeFile(join(home, "armed", `latin-card.${sha256.slice(0, 12)}.md`), latin1);
+  await appendLine<OwnerLine>(home, "owner.jsonl", "owner", c.now(), "w", { kind: "owner", act: "arm", lesson: "latin-card", sha256 });
+  expect((await memory.status()).cards).toEqual([{ id: "latin-card", state: "broken", sha256, armedAt: "2026-03-03T15:00:00.000Z",
+    fault: "card latin-card is not UTF-8 text: a card file is read as UTF-8." }]);
+  expect((await memory.recall("agent-one", ask)).house.cards_broken).toEqual(["latin-card"]);
+});
+
+test("a directory named like a card is that card's fault: every read answers", async () => {
+  await writeCard(home);
+  await memory.owner.arm(ID);
+  await mkdir(join(home, "lessons", "a-folder.md"));
+  const before = await memory.recall("agent-one", ask);
+
+  const status = await memory.status();
+  expect(status.cards).toEqual([{ id: "a-folder", state: "refused", fault: "Its file is a directory, not a card file." },
+    expect.objectContaining({ id: ID, state: "armed" })]);
+  const after = await memory.recall("agent-one", ask);
+  expect(after.applies.map((x) => x.id)).toEqual([ID]);
+  expect(after.applies).toEqual(before.applies);
+  const { lessons } = await memory.lessons();
+  expect(lessons.map((l) => [l.id, l.state])).toEqual([["a-folder", "refused"], [ID, "armed"]]);
+  expect(lessons[0]).not.toHaveProperty("file");
+  expect(lessons[1]).toMatchObject({ file: { text: STAND_IN_CARD }, armed: { text: STAND_IN_CARD } });
+});
+
+test("an armed copy that is a directory is a broken card", async () => {
+  await writeCard(home);
+  const { sha256 } = await memory.owner.arm(ID);
+  const copy = join(home, "armed", `${ID}.${sha256.slice(0, 12)}.md`);
+  await rm(copy);
+  await mkdir(copy);
+  expect((await memory.status()).cards).toEqual([expect.objectContaining({ id: ID, state: "broken",
+    fault: "Its armed copy is a directory, not a file." })]);
+  expect((await memory.lessons()).lessons[0]).toMatchObject({ id: ID, state: "broken", record: null, file: { text: STAND_IN_CARD } });
+  expect((await memory.recall("agent-one", ask)).house.cards_broken).toEqual([ID]);
 });
 
 test("a broken owner log: every record is null", async () => {

@@ -2,8 +2,10 @@
 //
 // A card file is `---`, YAML, `---`, then the words. lessons/<id>.md is the working file the owner edits; a card
 // applies only as the owner last armed it, from its byte-for-byte copy armed/<id>.<first 12 hex>.md, whose
-// SHA-256 the owner's line names. Every hash is of a file's raw bytes.
-import { readdir, readFile } from "node:fs/promises";
+// SHA-256 the owner's line names. Every hash is of a file's raw bytes. A card file is UTF-8; one that is not, or that
+// cannot be read at all (a directory named like a card), is that card's fault, never a reader's error.
+import { isUtf8 } from "node:buffer";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { MemoryError } from "./errors.js";
@@ -22,12 +24,15 @@ export interface CardStates { ownerChainBroken: boolean; brokeAt?: number; cards
 const SHA256 = /^[0-9a-f]{64}$/;
 const CLOSE = /^---[ \t]*(?:\n|$)/m;
 
-/** Parses a card file's bytes; its front matter id must be fileId. Throws E_CARD naming the fault. */
+/** Parses a card file's bytes, which must be UTF-8; its front matter id must be fileId. Throws E_CARD naming the fault. */
 export function parseCard(bytes: Uint8Array | string, fileId: string): Card {
+  const what = `card ${fileId}`;
+  if (typeof bytes !== "string" && !isUtf8(bytes)) {
+    throw new MemoryError("E_CARD", `${what} is not UTF-8 text: a card file is read as UTF-8.`);
+  }
   let text = typeof bytes === "string" ? bytes : Buffer.from(bytes).toString("utf8");
   if (text.startsWith("﻿")) text = text.slice(1);
   text = text.replaceAll("\r\n", "\n");
-  const what = `card ${fileId}`;
 
   if (!/^---[ \t]*\n/.test(text)) {
     throw new MemoryError("E_CARD", `${what} has no front matter: it starts with a line of three dashes, then YAML, then another.`);
@@ -130,6 +135,24 @@ export async function readBytes(path: string): Promise<Buffer | null> {
   }
 }
 
+/** A card file as a reader of the cards finds it: its bytes, null when there is none, or why it cannot be read. */
+export type CardFile = Buffer | null | { unreadable: "a directory" | "not readable" };
+
+/** Reads a card's file; an error other than "no such file" is the card's own fault, never the reader's. */
+export async function readCardFile(path: string): Promise<CardFile> {
+  try {
+    return await readBytes(path);
+  } catch {
+    const directory = await stat(path).then((st) => st.isDirectory(), () => false);
+    return { unreadable: directory ? "a directory" : "not readable" };
+  }
+}
+
+/** Whether a card file read is one that could not be read. */
+function unreadable(file: CardFile): file is { unreadable: "a directory" | "not readable" } {
+  return file !== null && !Buffer.isBuffer(file);
+}
+
 async function lessonIds(home: string): Promise<string[]> {
   const names = await readdir(join(home, "lessons"));
   return names.filter((n) => n.endsWith(".md")).map((n) => n.slice(0, -3));
@@ -140,8 +163,12 @@ async function armedState(home: string, id: string, sha256: string, armedAt: str
   if (!LESSON_ID.test(id) || !SHA256.test(sha256)) {
     return { ...base, state: "broken", fault: "The owner's line that armed it names no lesson id or no SHA-256." };
   }
-  const bytes = await readBytes(armedPath(home, id, sha256));
+  const bytes = await readCardFile(armedPath(home, id, sha256));
   if (bytes === null) return { ...base, state: "broken", fault: "Its armed copy is missing." };
+  if (unreadable(bytes)) {
+    return { ...base, state: "broken", fault: bytes.unreadable === "a directory" ? "Its armed copy is a directory, not a file."
+      : "Its armed copy cannot be read." };
+  }
   if (sha256Hex(bytes) !== sha256) {
     return { ...base, state: "broken", fault: "Its armed copy does not hash to what the owner armed." };
   }
@@ -151,14 +178,14 @@ async function armedState(home: string, id: string, sha256: string, armedAt: str
   } catch (err) {
     return { ...base, state: "broken", fault: faultOf(err) };
   }
-  const working = await readBytes(lessonPath(home, id));
-  const same = working !== null && sha256Hex(working) === sha256;
+  const working = await readCardFile(lessonPath(home, id));
+  const same = Buffer.isBuffer(working) && sha256Hex(working) === sha256;
   return { ...base, card, state: same ? "armed" : "changed" };
 }
 
 async function retiredState(home: string, id: string): Promise<CardState> {
-  const working = LESSON_ID.test(id) ? await readBytes(lessonPath(home, id)) : null;
-  if (working === null) return { id, state: "retired" };
+  const working = LESSON_ID.test(id) ? await readCardFile(lessonPath(home, id)) : null;
+  if (working === null || unreadable(working)) return { id, state: "retired" };
   try {
     return { id, state: "retired", card: parseCard(working, id) };
   } catch {
@@ -170,8 +197,12 @@ async function unarmedState(home: string, id: string): Promise<CardState> {
   if (!LESSON_ID.test(id)) {
     return { id, state: "refused", fault: `${id}.md is not named by a lesson id: lower-case letters, digits and dashes, 2 to 40.` };
   }
-  const working = await readBytes(lessonPath(home, id));
+  const working = await readCardFile(lessonPath(home, id));
   if (working === null) return { id, state: "refused", fault: "Its file is missing." };
+  if (unreadable(working)) {
+    return { id, state: "refused", fault: working.unreadable === "a directory" ? "Its file is a directory, not a card file."
+      : "Its file cannot be read." };
+  }
   try {
     return { id, state: "unarmed", card: parseCard(working, id) };
   } catch (err) {
