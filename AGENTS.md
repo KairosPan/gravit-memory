@@ -53,7 +53,7 @@ npm run build        # tsc to dist/; prepare runs it, so the package installs fr
 | `src/recall.ts` | answering a recall before a decision, and its line in `recalls.jsonl` |
 | `src/reconcile.ts` | asking the price source for every decision with something to measure, and appending outcomes |
 | `src/records.ts` | occasions, and each card's record of them |
-| `src/render.ts` | a recall's text, in its fixed order within 4,000 bytes; the quoting and the unseen-character escapes every text shares |
+| `src/render.ts` | a recall's text, in its fixed order within 4,000 bytes; the quoting, the unseen-character escapes, the identifier guard (`ident`) and the shapes of the values printed bare, which every text and the command line share |
 | `src/review.ts` | the review's material and the home's status |
 | `src/schema.ts` | every input's fields and limits, and the sentences that name a refused field |
 | `src/texts.ts` | the text of memory_status, memory_review and memory_reconcile: their content, each within its cap |

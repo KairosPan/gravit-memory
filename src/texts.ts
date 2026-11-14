@@ -8,9 +8,11 @@
 //
 // The status's text never holds the words, the definitions or the checks of a card that does not apply: such a card
 // is its id, its state and its fault, whatever Status it is handed. A changed card applies as armed, and its content
-// is the armed copy's (src/cards.ts parses the armed bytes). An applying card's words are never cut; when the cap
-// forces it, whole cards go from the end, with their facts, and are counted. An id, a name, a symbol, a market, a
-// state or an operator from the store is printed unquoted only when it has its shape (`ident`, src/render.ts).
+// is the armed copy's (src/cards.ts parses the armed bytes). An applying card's words are never cut, and its lists
+// show their first ten items and count the rest. When the cap forces it, a card's facts beyond eight are counted,
+// then whole cards go, caveats before red lines, each from the end; the cards left out are counted and named. An
+// id, a name, a symbol, a market, a state or an operator from the store is printed unquoted only when it has its shape
+// (`ident`, src/render.ts), and a figure only when it is a finite number (`pct`).
 import { CARD_FACTS_SHOWN, CARD_LIST_SHOWN, CARDS_NAMED, FACT_NAME, IDS_SHOWN, LESSON_ID, MEASURED_SHOWN, RECONCILE_MAX_BYTES, REFUSALS_SHOWN, REVIEW_MAX_BYTES, STATUS_MAX_BYTES,
   UNMEASURED_SHOWN, URL_SHOWN, WHY_SHOWN, WRITTEN_SHOWN } from "./limits.js";
 import { isApplying, type CardState } from "./cards.js";
