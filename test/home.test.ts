@@ -70,6 +70,50 @@ test("a faulty config is refused naming the key", async () => {
   await expect(readConfig(home)).rejects.toMatchObject({ code: "E_INPUT", message: expect.stringContaining("config.json") });
 });
 
+test("prices.every_minutes is a whole number of minutes from 0 to 1,440", async () => {
+  const home = await tempHome();
+  const withEvery = (every_minutes: unknown) =>
+    writeFile(join(home, "config.json"), JSON.stringify({ ...DEFAULT_CONFIG, prices: { ...DEFAULT_CONFIG.prices, every_minutes } }));
+  for (const bad of [61.5, -1, 1441]) {
+    await withEvery(bad);
+    await expect(readConfig(home)).rejects.toMatchObject({ code: "E_INPUT", message: expect.stringContaining("prices.every_minutes") });
+  }
+  for (const good of [0, 1440]) {
+    await withEvery(good);
+    expect((await readConfig(home)).prices.every_minutes).toBe(good);
+  }
+});
+
+test("the default config names no interval, and a new home's config.json is v0.1's", async () => {
+  expect(Object.hasOwn(DEFAULT_CONFIG.prices, "every_minutes")).toBe(false);
+  const home = await tempHome();
+  expect(await readFile(join(home, "config.json"), "utf8")).toBe(`{
+  "prices": {
+    "url": "",
+    "markets": {
+      "US": {
+        "venue": "cboe",
+        "benchmark": "SPY",
+        "zone": "America/New_York",
+        "close": "16:00"
+      },
+      "CN": {
+        "venue": "china",
+        "zone": "Asia/Shanghai",
+        "close": "15:00"
+      }
+    }
+  },
+  "horizons": [
+    1,
+    5,
+    20,
+    60
+  ]
+}
+`);
+});
+
 test("a home under a path with a space and non-ASCII characters", async () => {
   const home = await tempHome({ under: "张 三 home" });
   expect(home).toContain("张 三 home");

@@ -260,6 +260,24 @@ test("an agent voids its own line, not another's", async () => {
   expect(mine).toMatchObject({ decision: d.id, what: "void", by: "agent-one" });
 });
 
+test("memory_reconcile takes no force, and answers fresh within the interval", async () => {
+  const forced = await answer(one, "memory_reconcile", { force: true });
+  expect(forced.isError).toBe(true);
+  expect(textOf(forced)).toContain("force");
+
+  const stub = await candleStub();
+  await useSource(stub.url);
+  await call(one, "memory_record", nvda);
+  c.set("2026-03-05T15:00:00Z");
+  const first = await call(one, "memory_reconcile");                             // NVDA refused: asked once
+  expect(first.fresh).toBeUndefined();
+  expect(stub.requests).toHaveLength(1);
+  c.advance(60_000);
+  const second = await call(one, "memory_reconcile");
+  expect(second.fresh).toEqual({ asked_at: "2026-03-05T15:00:00.000Z", again_after: "2026-03-05T16:00:00.000Z" });
+  expect(stub.requests).toHaveLength(1);
+});
+
 test("only reconcile reaches the network", async () => {
   const stub = await candleStub();
   await useSource(stub.url);

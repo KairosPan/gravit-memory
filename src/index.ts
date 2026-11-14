@@ -26,7 +26,7 @@ export type { AmendInput, DecisionInput, DecisionView } from "./decisions.js";
 export type { Need } from "./match.js";
 export type { ProposalInput } from "./proposals.js";
 export type { AppliedCard, House, PastDecision, RecallAnswer, RecallInput, UntoldCard } from "./recall.js";
-export type { ReconcileReport } from "./reconcile.js";
+export type { ReconcileReport, Written } from "./reconcile.js";
 export type { Case, CardRecord, Figure } from "./records.js";
 export type { Review, Status } from "./review.js";
 export type { VerifyReport } from "./verify.js";
@@ -37,7 +37,7 @@ export interface Memory {
   record(by: string, input: unknown): Promise<DecisionLine>;
   amend(by: string, input: unknown): Promise<AmendLine>;
   propose(by: string, input: unknown): Promise<ProposalLine>;
-  reconcile(by: string): Promise<ReconcileReport>;
+  reconcile(by: string, opts?: { force?: boolean }): Promise<ReconcileReport>;
   review(since?: string): Promise<Review>;
   status(): Promise<Status>;
   verify(): Promise<VerifyReport>;
@@ -73,7 +73,7 @@ export function openMemory(home: string, deps?: Deps): Memory {
     record: (by, input) => asAgent(by, () => recordDecision(home, by, input, now())),
     amend: (by, input) => asAgent(by, () => amendDecision(home, by, input, now())),
     propose: (by, input) => asAgent(by, () => propose(home, by, input, now())),
-    reconcile: (by) => asAgent(by, () => reconcile(home, by, d)),
+    reconcile: (by, opts) => asAgent(by, () => reconcile(home, by, d, opts)),
     review: (since) => inHome(() => review(home, since, d)),
     status: () => inHome(() => status(home)),
     verify: () => inHome(() => verify(home)),

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { MemoryError } from "./errors.js";
-import { DEFAULT_HORIZONS, HORIZON_MAX, HORIZON_MIN } from "./limits.js";
+import { DEFAULT_HORIZONS, EVERY_MINUTES_MAX, HORIZON_MAX, HORIZON_MIN } from "./limits.js";
 import type { Config } from "./types.js";
 
 export const FILES = { decisions: "decisions.jsonl", recalls: "recalls.jsonl", outcomes: "outcomes.jsonl",
@@ -34,6 +34,7 @@ const configSchema = z.object({
       zone: z.string().min(1),
       close: z.string().regex(/^\d{2}:\d{2}$/, "must be HH:MM"),
     })),
+    every_minutes: z.number().int().min(0).max(EVERY_MINUTES_MAX).optional(),
   }),
   horizons: z.array(z.number().int().min(HORIZON_MIN).max(HORIZON_MAX)).min(1),
 });

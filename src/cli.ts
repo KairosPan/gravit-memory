@@ -44,7 +44,7 @@ export interface Io { out(text: string): void; err(text: string): void; isTTY: b
 /** The Io the commands write through: every line made visible and cut to the width; `json` is a document, uncut. */
 interface Door extends Io { json(text: string): void }
 
-interface Command { usage: string; what: string; id?: string; json?: true; reason?: true; owner?: true }
+interface Command { usage: string; what: string; id?: string; json?: true; reason?: true; force?: true; owner?: true }
 
 const COMMANDS: Record<string, Command> = {
   init: { usage: "init", what: "make the memory's home and say where it is" },
@@ -55,7 +55,7 @@ const COMMANDS: Record<string, Command> = {
   arm: { usage: "arm <lesson>", what: "arm a card as its file is now", id: "lesson", owner: true },
   retire: { usage: "retire <lesson> --reason <words>", what: "retire an armed card", id: "lesson", reason: true, owner: true },
   void: { usage: "void <decision> --reason <words>", what: "void a decision", id: "decision", reason: true, owner: true },
-  reconcile: { usage: "reconcile", what: "measure the decisions against the price source" },
+  reconcile: { usage: "reconcile [--force]", what: "measure the decisions against the price source", force: true },
   verify: { usage: "verify [--json]", what: "check every chain, every id a line points at, every armed copy", json: true },
   reseal: { usage: "reseal", what: "restart each broken chain from where it broke", owner: true },
   mcp: { usage: "mcp --as <name>", what: "serve the agent's door over stdio" },
@@ -190,7 +190,7 @@ export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<numb
     return runMcp(rest, { ...deps, stderr, env: io.env });
   }
 
-  let values: { home?: string; json?: boolean; reason?: string };
+  let values: { home?: string; json?: boolean; reason?: string; force?: boolean };
   let positionals: string[];
   try {
     ({ values, positionals } = parseArgs({
@@ -199,8 +199,9 @@ export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<numb
         home: { type: "string" },
         ...(cmd.json ? { json: { type: "boolean" } } : {}),
         ...(cmd.reason ? { reason: { type: "string" } } : {}),
+        ...(cmd.force ? { force: { type: "boolean" } } : {}),
       },
-    }) as { values: { home?: string; json?: boolean; reason?: string }; positionals: string[] });
+    }) as { values: { home?: string; json?: boolean; reason?: string; force?: boolean }; positionals: string[] });
   } catch (err) {
     const code = (err as { code?: unknown }).code;
     if (code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
@@ -234,7 +235,7 @@ export async function runCli(argv: string[], raw: Io, deps?: Deps): Promise<numb
       case "arm": return await arm(io, memory, id);
       case "retire": return await retire(io, memory, id, reason!);
       case "void": return await voidDecision(io, memory, id, reason!);
-      case "reconcile": return await reconcile(io, memory);
+      case "reconcile": return await reconcile(io, memory, values.force === true);
       case "verify": return await verify(io, memory, values.json === true);
       case "reseal": return await reseal(io, memory);
     }
@@ -466,9 +467,14 @@ async function show(io: Door, memory: Memory, id: string, json: boolean): Promis
   return 0;
 }
 
-async function reconcile(io: Door, memory: Memory): Promise<number> {
-  const r = await memory.reconcile(RECONCILER);
+async function reconcile(io: Door, memory: Memory, force: boolean): Promise<number> {
+  const r = await memory.reconcile(RECONCILER, { force });
   if (r.source === null) { io.out("No price source is set: nothing was measured. Set prices.url in config.json."); return 0; }
+  if (r.fresh) {
+    io.out(`Fresh: the price source was asked at ${ident(r.fresh.asked_at, ISO_TIME)}; nothing is read again before `
+      + `${ident(r.fresh.again_after, ISO_TIME)}, unless you run reconcile --force.`);
+    return 0;
+  }
   io.out(`Measured ${r.measured}, closed ${r.closed}, still due ${r.stillDue}, refused ${r.refused.length}, unmeasured ${r.unmeasured.length}.`);
   if (r.refused.length > 0) io.out(["Refused, each its symbol, its market and why:", ...r.refused.map((x) => fence(`${x.symbol} in ${x.market}: ${x.why}`))].join("\n"));
   for (const x of r.unmeasured) io.out(`  unmeasured: ${ident(x.decision, DECISION_ID)}: ${ident(x.why, /^no (symbol|market)$/)}`);

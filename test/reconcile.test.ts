@@ -7,6 +7,8 @@ import { mayBeDue, readOutcomes, reconcile } from "../src/reconcile.js";
 import type { OutcomeLine } from "../src/types.js";
 import { candleStub, chinaAnswer, cboeAnswer, clock, tempHome, weekdays } from "./helpers.js";
 
+const MINUTE = 60_000;
+
 const nvda = { action: "buy", whose: "agent", thesis: "Data-centre orders keep rising.", symbol: "NVDA", market: "US" } as const;
 const bars = weekdays("2026-03-02", [100, 104, 102, 110, 99, 120, 130]);         // Mon 03-02 … Tue 03-10
 const spy = weekdays("2026-03-02", [500, 510, 520, 505, 530, 540, 525]);
@@ -22,8 +24,10 @@ beforeEach(async () => {
   stub.set("SPY", cboeAnswer(spy));
 });
 
-async function useSource(url: string): Promise<void> {
-  const config = { ...DEFAULT_CONFIG, prices: { ...DEFAULT_CONFIG.prices, url } };
+/** Sets the price source, and the interval when one is given; the tests that reconcile twice at once give 0. */
+async function useSource(url: string, every_minutes?: number): Promise<void> {
+  const config = { ...DEFAULT_CONFIG,
+    prices: { ...DEFAULT_CONFIG.prices, url, ...(every_minutes !== undefined ? { every_minutes } : {}) } };
   await writeFile(join(home, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
 }
 
@@ -43,7 +47,7 @@ test("no price source", async () => {
 });
 
 test("each symbol is read once", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   await record(nvda);
   await record({ ...nvda, action: "add" });
   await record({ ...nvda, symbol: "AMD" });
@@ -56,7 +60,7 @@ test("each symbol is read once", async () => {
 });
 
 test("measured lines carry what was read", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   const d = await record({ ...nvda, price: 101 });
   stub.set("NVDA", cboeAnswer(bars));
   c.set("2026-03-11T12:00:00Z");
@@ -73,7 +77,7 @@ test("measured lines carry what was read", async () => {
 });
 
 test("a second reconcile measures only what came due", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   await record({ ...nvda, price: 101 });
   stub.set("NVDA", cboeAnswer(bars.slice(0, 3)));
   c.set("2026-03-05T12:00:00Z");
@@ -94,7 +98,7 @@ test("a second reconcile measures only what came due", async () => {
 });
 
 test("an A share past the range is closed, and not asked again", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   await record({ ...nvda, symbol: "sh600000", market: "CN", decided_at: "2025-01-06T03:00:00.000Z" });
   stub.set("sh600000", chinaAnswer(bars));
   c.set("2026-03-11T12:00:00Z");
@@ -109,7 +113,7 @@ test("an A share past the range is closed, and not asked again", async () => {
 });
 
 test("a US day 0 beyond 750 bars is asked for once more", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   await record({ ...nvda, decided_at: "2023-01-04T15:00:00.000Z" });
   stub.set("NVDA", cboeAnswer(bars));
   c.set("2026-03-11T12:00:00Z");
@@ -121,7 +125,7 @@ test("a US day 0 beyond 750 bars is asked for once more", async () => {
 });
 
 test("a US day 0 found in the longer answer is measured from it", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   const old = weekdays("2023-01-02", Array.from({ length: 900 }, (_, i) => 100 + i));
   stub.set("NVDA", cboeAnswer(old));
   stub.set("SPY", cboeAnswer(weekdays("2023-01-02", Array.from({ length: 900 }, () => 400))));
@@ -145,7 +149,7 @@ test("a US day 0 found in the longer answer is measured from it", async () => {
 });
 
 test("void, no symbol, an unnamed market", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   const gone = await record(nvda);
   await amendDecision(home, "agent-one", { decision: gone.id, what: "void", reason: "Recorded twice." }, c.now());
   const bare = await record({ action: "hold", whose: "agent", thesis: "The book stays as it is." });
@@ -160,7 +164,7 @@ test("void, no symbol, an unnamed market", async () => {
 });
 
 test("a refused source writes nothing", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   await record(nvda);
   c.set("2026-03-11T12:00:00Z");
   const report = await run();                                                      // the stub has no answer for NVDA
@@ -170,7 +174,7 @@ test("a refused source writes nothing", async () => {
 });
 
 test("a refused benchmark holds its market's measuring back", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   await record(nvda);
   stub.set("NVDA", cboeAnswer(bars));
   stub.set("SPY", { ok: false, refusal: { message: "Cboe is not answering" } }, 409);
@@ -182,7 +186,7 @@ test("a refused benchmark holds its market's measuring back", async () => {
 });
 
 test("a refused benchmark still lets the price leg and a closed line be written", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   const d = await record({ ...nvda, price: 101 });
   const old = await record({ ...nvda, symbol: "AMD", decided_at: "2026-02-02T15:00:00Z" });
   stub.set("NVDA", cboeAnswer(bars));
@@ -201,7 +205,7 @@ test("reconcile writes only under an agent's name", async () => {
 });
 
 test("mayBeDue", async () => {
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   c.set("2026-03-02T15:00:00Z");                                                   // Monday
   await record(nvda);
   expect(await mayBeDue(home, Date.parse("2026-03-03T15:00:00Z"))).toBe(0);         // Tuesday
@@ -221,16 +225,16 @@ test("last-reconcile.json", async () => {
   await record(nvda);
   c.set("2026-03-11T12:00:00Z");
   await run();
-  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ t: "2026-03-11T12:00:00.000Z", source: null, ok: false, refused: 0 });
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ t: "2026-03-11T12:00:00.000Z", source: null, ok: false, refused: 0, asked: 0 });
 
-  await useSource(stub.url);
+  await useSource(stub.url, 0);
   await run();
-  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ t: "2026-03-11T12:00:00.000Z", source: stub.url, ok: false, refused: 1 });
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ t: "2026-03-11T12:00:00.000Z", source: stub.url, ok: false, refused: 1, asked: 1 });
 
   stub.set("NVDA", cboeAnswer(bars));
   c.set("2026-03-12T12:00:00Z");
   await run();
-  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ t: "2026-03-12T12:00:00.000Z", source: stub.url, ok: true, refused: 0 });
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ t: "2026-03-12T12:00:00.000Z", source: stub.url, ok: true, refused: 0, asked: 2 });
   if (process.platform !== "win32") expect((await stat(file)).mode & 0o777).toBe(0o600);
 });
 
@@ -238,4 +242,162 @@ test("readOutcomes reads outcome lines alone", async () => {
   expect(await readOutcomes(home)).toMatchObject({ lines: [], partial: false, chain: { ok: true } });
   const lines: OutcomeLine[] = (await readOutcomes(home)).lines;
   expect(lines).toEqual([]);
+});
+
+// ---- the interval ----
+
+const lastFile = () => join(home, "last-reconcile.json");
+const askedFor = (symbol: string) => stub.requests.filter((u) => u.searchParams.get("symbol") === symbol).length;
+
+/** One NVDA decision on Tue 03-03 with its bars set, the clock at Tue 03-10 15:00Z: horizons 20 and 60 stay due. */
+async function oneDecision(): Promise<void> {
+  await useSource(stub.url);
+  await record(nvda);
+  stub.set("NVDA", cboeAnswer(bars));
+  c.set("2026-03-10T15:00:00Z");
+}
+
+test("a reconcile sooner than the interval reads nothing and says fresh", async () => {
+  await oneDecision();
+  const first = await run("agent-one");
+  expect(first.fresh).toBeUndefined();
+  expect(first.written.length).toBeGreaterThan(0);
+  const asked = stub.requests.length;
+  const before = await readFile(lastFile(), "utf8");
+  const lines = await readFile(join(home, "outcomes.jsonl"), "utf8");
+
+  c.advance(59 * MINUTE);
+  const second = await run("agent-two");
+  expect(second.fresh).toEqual({ asked_at: "2026-03-10T15:00:00.000Z", again_after: "2026-03-10T16:00:00.000Z" });
+  expect(second).toMatchObject({ source: stub.url, measured: 0, closed: 0, refused: [], written: [], unmeasured: [],
+    stillDue: first.stillDue });
+  expect(stub.requests.length).toBe(asked);                                        // nothing was read
+  expect(await readFile(lastFile(), "utf8")).toBe(before);                          // and nothing written (P-c)
+  expect(await readFile(join(home, "outcomes.jsonl"), "utf8")).toBe(lines);
+});
+
+test("at the interval it reads again", async () => {
+  await oneDecision();
+  await run();
+  const asked = askedFor("NVDA");
+  c.advance(60 * MINUTE);
+  const again = await run();
+  expect(again.fresh).toBeUndefined();
+  expect(askedFor("NVDA")).toBe(asked + 1);
+  expect(JSON.parse(await readFile(lastFile(), "utf8"))).toMatchObject({ t: "2026-03-10T16:00:00.000Z" });
+});
+
+test("force reads at once", async () => {
+  await oneDecision();
+  await run();
+  const asked = askedFor("NVDA");
+  c.advance(MINUTE);
+  const forced = await reconcile(home, "agent-one", { now: c.now, fetch }, { force: true });
+  expect(forced.fresh).toBeUndefined();
+  expect(askedFor("NVDA")).toBe(asked + 1);
+  expect(JSON.parse(await readFile(lastFile(), "utf8"))).toMatchObject({ t: "2026-03-10T15:01:00.000Z" });
+});
+
+test("every_minutes 0 never holds back", async () => {
+  await oneDecision();
+  await useSource(stub.url, 0);
+  await run();
+  const asked = askedFor("NVDA");
+  c.advance(MINUTE);
+  expect((await run()).fresh).toBeUndefined();
+  await run();
+  expect(askedFor("NVDA")).toBe(asked + 2);
+});
+
+test("a run that asked nothing starts no interval", async () => {
+  await useSource(stub.url);
+  c.set("2026-03-11T12:00:00Z");
+  expect(await run()).toMatchObject({ measured: 0, written: [] });
+  expect(JSON.parse(await readFile(lastFile(), "utf8"))).toMatchObject({ asked: 0 });
+  expect(stub.requests).toHaveLength(0);
+
+  c.advance(MINUTE);
+  await record({ ...nvda, decided_at: "2026-03-03T15:00:00.000Z" });
+  stub.set("NVDA", cboeAnswer(bars));
+  const report = await run();
+  expect(report.fresh).toBeUndefined();
+  expect(report.measured).toBeGreaterThan(0);
+  expect(askedFor("NVDA")).toBe(1);
+});
+
+test("a refused run starts the interval too", async () => {
+  await useSource(stub.url);
+  await record(nvda);
+  c.set("2026-03-10T15:00:00Z");
+  const first = await run();                                                        // the stub has no answer for NVDA
+  expect(first.refused).toEqual([{ market: "US", symbol: "NVDA", why: "no answer set for NVDA" }]);
+  expect(JSON.parse(await readFile(lastFile(), "utf8"))).toMatchObject({ ok: false, refused: 1, asked: 1 });
+
+  stub.set("NVDA", cboeAnswer(bars));
+  c.advance(MINUTE);
+  const second = await run();
+  expect(second.fresh).toEqual({ asked_at: "2026-03-10T15:00:00.000Z", again_after: "2026-03-10T16:00:00.000Z" });
+  expect(askedFor("NVDA")).toBe(1);                                                 // not asked again (P-a)
+});
+
+test("a home made by v0.1 is not held back", async () => {
+  const config = { ...DEFAULT_CONFIG, prices: { ...DEFAULT_CONFIG.prices, url: stub.url } };
+  await writeFile(join(home, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+  await record(nvda);
+  stub.set("NVDA", cboeAnswer(bars));
+  c.set("2026-03-10T15:00:00Z");
+  await writeFile(lastFile(), `${JSON.stringify({ t: "2026-03-10T14:59:00.000Z", source: stub.url, ok: true, refused: 0 })}\n`);
+  const report = await run();
+  expect(report.fresh).toBeUndefined();
+  expect(askedFor("NVDA")).toBe(1);
+});
+
+test("a clock that went back holds nothing back", async () => {
+  await oneDecision();
+  await writeFile(lastFile(),
+    `${JSON.stringify({ t: "2026-03-10T16:00:00.000Z", source: stub.url, ok: true, refused: 0, asked: 3 })}\n`);
+  const report = await run();
+  expect(report.fresh).toBeUndefined();
+  expect(askedFor("NVDA")).toBe(1);
+});
+
+test("written says what each line said", async () => {
+  await useSource(stub.url);
+  const d = await record({ ...nvda, price: 101 });
+  const old = await record({ ...nvda, symbol: "AMD", decided_at: "2026-02-02T15:00:00Z" });
+  stub.set("NVDA", cboeAnswer(bars));
+  stub.set("AMD", cboeAnswer(bars));                                              // day 0 of AMD is before its first bar
+  c.set("2026-03-11T12:00:00Z");
+  const report = await run();
+  expect(report.written).toEqual([
+    { decision: d.id, symbol: "NVDA", what: "leg", pct: 2.97 },
+    { decision: d.id, symbol: "NVDA", what: "horizon", k: 1, pct: -1.92 },
+    { decision: d.id, symbol: "NVDA", what: "horizon", k: 5, pct: 25 },
+    { decision: old.id, symbol: "AMD", what: "closed" },
+  ]);
+  const lines = await outcomes();
+  expect(lines.map((l) => [l.decision, l.what])).toEqual(report.written.map((w) => [w.decision, w.what]));
+});
+
+test("a leg not taken is written with pct null", async () => {
+  await useSource(stub.url);
+  const d = await record({ ...nvda, price: 50 });                                  // half the close: a scale, not a price
+  stub.set("NVDA", cboeAnswer(bars));
+  c.set("2026-03-11T12:00:00Z");
+  const report = await run();
+  const leg = (await outcomes()).find((l) => l.what === "leg");
+  expect(leg).toMatchObject({ leg_pct: null });
+  expect(report.written[0]).toEqual({ decision: d.id, symbol: "NVDA", what: "leg", pct: null });
+});
+
+test("last-reconcile.json counts what was asked", async () => {
+  await useSource(stub.url);
+  await record(nvda);
+  await record({ ...nvda, symbol: "AMD" });
+  stub.set("NVDA", cboeAnswer(bars));
+  stub.set("AMD", cboeAnswer(bars));
+  c.set("2026-03-11T12:00:00Z");
+  await run();
+  expect(symbolsAsked()).toEqual(["AMD", "NVDA", "SPY"]);
+  expect(JSON.parse(await readFile(lastFile(), "utf8"))).toMatchObject({ ok: true, refused: 0, asked: 3 });
 });

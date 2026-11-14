@@ -57,5 +57,5 @@ export type OwnerLine = LineBase & { kind: "owner" } & OwnerBody;
 export interface ResealLine extends LineBase { kind: "reseal"; broke_at: number; file_sha256: string }
 
 export interface MarketConfig { venue: string; benchmark?: string; zone: string; close: string }
-export interface Config { prices: { url: string; markets: Record<string, MarketConfig> }; horizons: number[] }
+export interface Config { prices: { url: string; markets: Record<string, MarketConfig>; every_minutes?: number }; horizons: number[] }
 export interface Deps { now?: () => number; fetch?: typeof fetch }

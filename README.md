@@ -154,7 +154,7 @@ An answer to a proposal never writes over a lessons file of yours that you have 
 | `gravit-memory arm <lesson>` | arms a card as its file is now |
 | `gravit-memory retire <lesson> --reason <words>` | retires an armed card |
 | `gravit-memory void <decision> --reason <words>` | voids a decision |
-| `gravit-memory reconcile` | measures the decisions against the price source |
+| `gravit-memory reconcile [--force]` | measures the decisions against the price source; `--force` reads within the interval |
 | `gravit-memory verify [--json]` | checks every chain, every id a line points at, every armed copy |
 | `gravit-memory reseal` | restarts each broken chain from where it broke |
 | `gravit-memory mcp --as <name>` | serves the agent's door over stdio |
@@ -217,6 +217,12 @@ reported refused and asked again at the next reconcile. Anything else is reporte
 When the bars a source gives no longer reach a decision's day 0, the decision is closed as "not measurable from
 this source" and is not asked again. An A share (`venue: "china"`) is read a year at a time, about 250 daily bars, so
 it is measurable for about a year after its decision; a decision reconciled later than that is closed so.
+
+A reconcile is not run sooner than an interval after the last one that asked the source: `prices.every_minutes` in
+`config.json`, a whole number of minutes from 0 to 1,440, 60 when the key is absent, and 0 for no interval. A run
+that asked the source counts whether it was answered or refused; a run that asked nothing starts no interval. Within
+the interval a reconcile reads nothing, writes nothing and answers `fresh`, with the time the source was asked and the
+time it may be asked again. `gravit-memory reconcile --force` reads at once; the agent's tool has no such choice.
 
 ## What is protected, and what is not
 

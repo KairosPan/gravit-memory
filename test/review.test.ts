@@ -159,7 +159,7 @@ test("status says whether the price source last answered", async () => {
   await writeFile(join(home, "config.json"), JSON.stringify({ prices: { url: "http://127.0.0.1:9", markets: {} }, horizons: [1] }));
   await reconcile(home, "agent-one", deps);
   expect((await status(home)).prices).toEqual({ url: "http://127.0.0.1:9",
-    last: { t: "2026-03-02T15:00:00.000Z", ok: true, refused: 0 } });
+    last: { t: "2026-03-02T15:00:00.000Z", ok: true, refused: 0, asked: 0 } });
 });
 
 test("status names a refused and a changed card", async () => {

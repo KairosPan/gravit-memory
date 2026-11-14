@@ -9,7 +9,8 @@ import { charWidth, isEntry, makeAsk, rows, runCli, visible, type Io } from "../
 import { appendLine } from "../src/log.js";
 import type { ProposalLine } from "../src/types.js";
 import { openMemory, type Card, type Memory } from "../src/index.js";
-import { DAY, STAND_IN_CARD, clock, tempHome, writeCard } from "./helpers.js";
+import { DAY, STAND_IN_CARD, candleStub, cboeAnswer, clock, tempHome, weekdays, writeCard } from "./helpers.js";
+import { DEFAULT_CONFIG } from "../src/home.js";
 
 const ID = "no-chasing-after-a-run";
 const WORDS = "No new position in a name that ran 20% in five sessions.";
@@ -355,6 +356,39 @@ test("reconcile and verify print their reports", async () => {
   const json = fakeIo();
   expect(await runCli(["verify", "--json", "--home", home], json)).toBe(1);
   expect(JSON.parse(json.printed())).toMatchObject({ ok: false });
+});
+
+test("reconcile holds back within the interval, and --force reads at once", async () => {
+  const stub = await candleStub();
+  const config = { ...DEFAULT_CONFIG, prices: { ...DEFAULT_CONFIG.prices, url: stub.url } };
+  await writeFile(join(home, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+  await memory.record("agent-one", nvda);
+  stub.set("NVDA", cboeAnswer(weekdays("2026-03-02", [100, 101, 102, 103])));
+  stub.set("SPY", cboeAnswer(weekdays("2026-03-02", [500, 501, 502, 503])));
+  c.set("2026-03-05T15:00:00Z");
+  const live = { ...deps, fetch };
+  expect(await runCli(["reconcile", "--home", home], fakeIo(), live)).toBe(0);
+  const asked = stub.requests.length;
+  expect(asked).toBeGreaterThan(0);
+
+  c.advance(60_000);
+  const fresh = fakeIo();
+  expect(await runCli(["reconcile", "--home", home], fresh, live)).toBe(0);
+  expect(fresh.printed().split("\n")).toHaveLength(1);
+  expect(fresh.printed()).toContain("Fresh");
+  expect(fresh.printed()).toContain("2026-03-05T15:00:00.000Z");
+  expect(fresh.printed()).toContain("2026-03-05T16:00:00.000Z");
+  expect(fresh.printed()).toContain("--force");
+  expect(stub.requests.length).toBe(asked);
+
+  const forced = fakeIo();
+  expect(await runCli(["reconcile", "--force", "--home", home], forced, live)).toBe(0);
+  expect(forced.printed()).toContain("Measured");
+  expect(stub.requests.length).toBeGreaterThan(asked);
+
+  const status = fakeIo();
+  expect(await runCli(["status", "--force", "--home", home], status)).toBe(2);
+  expect(status.errors()).toContain("unknown option --force");
 });
 
 test("mcp without --as", async () => {

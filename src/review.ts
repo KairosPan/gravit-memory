@@ -25,7 +25,7 @@ export interface Review { since: string; measured: Array<PastDecision>; cards: A
 export interface Status { home: string; version: 1; lines: Record<LogFile, number>; partial: LogFile[];
   chains: Array<{ file: LogFile; ok: boolean; line?: number }>; cards: CardState[];
   facts: Array<{ card: string; fact: string; definition: string; checked: Check[] }>; tags: Array<{ tag: string; count: number }>;
-  prices: { url: string; last?: { t: string; ok: boolean; refused: number } } }
+  prices: { url: string; last?: { t: string; ok: boolean; refused: number; asked?: number } } }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const isoTime = z.iso.datetime({ offset: true });
