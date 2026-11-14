@@ -63,8 +63,8 @@ structures keep it all; a recall's structure is as short as its text, and its ho
 broken cards, counting the rest in `cards_changed_more` and `cards_broken_more`. Text from the memory is quoted, a
 character a reader cannot see (a control, a format or bidi character, a line separator) is written as an escape, an
 id or a name is printed bare only when it has its shape (else quoted, within 100 bytes), and a figure only when it is
-a number. None of this holds against a process that can write the home's files: see "What is protected, and what is
-not" below.
+a number. None of this is a guarantee against a process that can write the home's files: see "What is protected, and
+what is not" below.
 
 `gravit-memory mcp` serves the agent's door until its input closes. It also reads `GRAVIT_MEMORY_HOME`, or takes
 `--home <path>`.

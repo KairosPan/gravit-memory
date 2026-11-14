@@ -4,7 +4,7 @@
 // writes its file first and its owner.jsonl line, `by: "owner"`, after: a crash between leaves a file no line
 // names, never a line naming a file that is not there.
 import { chmod, writeFile } from "node:fs/promises";
-import { armedPath, cardStates, lessonPath, parseCard, readBytes, readCardFile, unreadable } from "./cards.js";
+import { armedPath, cardStates, lessonPath, parseCard, readBytes, readCardFile, unreadable, unreadableSentence } from "./cards.js";
 import { MemoryError } from "./errors.js";
 import { assertHome } from "./home.js";
 import { sha256Hex } from "./ids.js";
@@ -24,10 +24,7 @@ export async function arm(home: string, lesson: string, nowMs: number, expect?: 
   await assertHome(home);
   const bytes = await readCardFile(lessonPath(home, lesson));
   if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
-  if (unreadable(bytes)) {
-    throw new MemoryError("E_CARD", `card ${lesson} cannot be armed: lessons/${lesson}.md ${bytes.unreadable === "a directory"
-      ? "is a directory, not a card file" : "cannot be read"}.`);
-  }
+  if (unreadable(bytes)) throw new MemoryError("E_CARD", unreadableSentence(lesson, bytes, "armed"));
   const sha256 = sha256Hex(bytes);
   if (expect !== undefined && sha256 !== expect) {
     throw new MemoryError("E_REFUSED", "the card changed while it was shown: nothing was armed.");
@@ -50,13 +47,15 @@ export async function retire(home: string, lesson: string, reason: string, nowMs
   await appendLine<OwnerLine>(home, "owner.jsonl", "owner", nowMs, "w", { kind: "owner", act: "retire", lesson, reason });
 }
 
-/** Puts a changed card's working file back as it was armed (D-g). */
+/** Puts a changed card's working file back as it was armed (D-g); one that is a directory or cannot be read is refused. */
 export async function discard(home: string, lesson: string, nowMs: number): Promise<void> {
   checkLesson(lesson);
   const state = (await cardStates(home)).cards.find((c) => c.id === lesson);
   if (state?.state !== "changed") {
     throw new MemoryError("E_REFUSED", `lesson ${lesson} is not changed since it was armed: there is nothing to discard.`);
   }
+  const working = await readCardFile(lessonPath(home, lesson));
+  if (unreadable(working)) throw new MemoryError("E_REFUSED", unreadableSentence(lesson, working, "put back as armed"));
   const bytes = await readBytes(armedPath(home, lesson, state.sha256!));
   if (bytes === null) throw new MemoryError("E_REFUSED", `lesson ${lesson} has lost its armed copy.`);
   await writePrivate(lessonPath(home, lesson), bytes);

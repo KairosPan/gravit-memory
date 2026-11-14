@@ -22,7 +22,7 @@ import type { Readable } from "node:stream";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { armedPath, lessonPath, parseCard, readBytes, readCardFile, renderCard, unreadable } from "./cards.js";
+import { armedPath, lessonPath, parseCard, readBytes, readCardFile, renderCard, unreadable, unreadableSentence } from "./cards.js";
 import { MemoryError } from "./errors.js";
 import { initHome, resolveHome } from "./home.js";
 import { sha256Hex } from "./ids.js";
@@ -252,7 +252,7 @@ async function arm(io: Door, memory: Memory, lesson: string): Promise<number> {
   }
   const bytes = await readCardFile(lessonPath(memory.home, lesson));   // read once: shown, then armed only if unchanged
   if (bytes === null) throw new MemoryError("E_NOT_FOUND", `lesson ${lesson} has no file: write lessons/${lesson}.md first.`);
-  if (unreadable(bytes)) throw new MemoryError("E_CARD", `lesson ${lesson} cannot be armed: ${cannotRead(lesson, bytes)}`);
+  if (unreadable(bytes)) throw new MemoryError("E_CARD", unreadableSentence(lesson, bytes, "armed"));
   const text = bytes.toString("utf8");
   const shownSha = sha256Hex(bytes);
   const card = parseCard(bytes, lesson);
@@ -384,8 +384,8 @@ async function review(io: Door, memory: Memory): Promise<number> {
       const id = ident(s.id, LESSON_ID);
       const bytes = await readCardFile(lessonPath(memory.home, s.id));  // read once: shown, then armed only if unchanged
       if (unreadable(bytes)) {
-        io.out(`Lesson ${id} has changed since it was armed on ${armedOn(s)}, and its working file cannot be read: `
-          + `${cannotRead(id, bytes)} Nothing is armed for it; the armed copy still applies.`);
+        io.out(`Lesson ${id} has changed since it was armed on ${armedOn(s)}, and ${unreadableSentence(id, bytes, "armed")} `
+          + "The armed copy still applies.");
         return;
       }
       io.out(`Lesson ${id} has changed since it was armed on ${armedOn(s)}:`);
@@ -509,11 +509,6 @@ function armedOn(s: CardState): string {
 
 function checkReason(reason: string): void {
   if ([...reason].length > REASON_MAX) throw new MemoryError("E_INPUT", `reason must hold 1 to ${REASON_MAX} characters.`);
-}
-
-/** Why a card's working file cannot be read, as one sentence. */
-function cannotRead(id: string, file: { unreadable: "a directory" | "not readable" }): string {
-  return `lessons/${id}.md ${file.unreadable === "a directory" ? "is a directory, not a card file" : "cannot be read"}.`;
 }
 
 /** Lines only in the armed copy marked "-", lines only in the working file's text (as read) marked "+", all fenced. */

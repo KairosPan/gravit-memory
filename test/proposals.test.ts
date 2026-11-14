@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { cardStates, parseCard, renderCard, type CardState } from "../src/cards.js";
@@ -6,7 +6,7 @@ import { recordDecision } from "../src/decisions.js";
 import type { Code } from "../src/errors.js";
 import { sha256Hex } from "../src/ids.js";
 import { appendLine, readLog } from "../src/log.js";
-import { arm } from "../src/owner.js";
+import { arm, discard } from "../src/owner.js";
 import { accept, edit, propose, reject, waitingProposals } from "../src/proposals.js";
 import type { Card, OwnerLine, ProposalLine } from "../src/types.js";
 import { STAND_IN_CARD, clock, tempHome, writeCard } from "./helpers.js";
@@ -211,5 +211,21 @@ test("an answer not written by the owner answers nothing", async () => {
   const p = await proposeAs(newOne);
   await appendLine<OwnerLine>(home, "owner.jsonl", "agent-one", c.now(), "w",
     { kind: "owner", act: "reject", proposal: p.id, reason: "Forged." });
+  expect(await waitingProposals(home)).toEqual([p]);
+});
+
+test("a working file that is a directory: accept, edit and discard refuse in plain words, and write nothing", async () => {
+  await writeCard(home);
+  await arm(home, ID, c.now());
+  const p = await proposeAs({ what: "change", lesson: ID, card: { ...card, words: "Filler words, changed." }, reason: "Filler." });
+  await rm(join(home, "lessons", `${ID}.md`));
+  await mkdir(join(home, "lessons", `${ID}.md`));
+  const before = await ownerLines();
+  for (const act of [() => accept(home, p.id, c.now()), () => edit(home, p.id, c.now()), () => discard(home, ID, c.now())]) {
+    const message = await fails(act(), "E_REFUSED");
+    expect(message).toContain(`lessons/${ID}.md is a directory, not a card file.`);
+    expect(message).not.toContain(home);
+  }
+  expect(await ownerLines()).toEqual(before);
   expect(await waitingProposals(home)).toEqual([p]);
 });

@@ -103,15 +103,19 @@ const SHAPES: Shape[] = [
   { fullRecords: false, cut: true, like: false, same: false },
 ];
 
-/** The text of a recall, at most RECALL_MAX_BYTES. */
+/**
+ * The text of a recall, at most RECALL_MAX_BYTES. `changed`, when given, is every card changed since armed, as
+ * `fitRecall` takes it; it marks an applying card and never enters the answer's structure.
+ */
 export function renderRecall(a: Answer, changed?: ReadonlySet<string>): string {
   return fitRecall(a, changed).text;
 }
 
 /**
  * The text, and the answer as the text shows it (`shownAs`): an untold card the last steps leave out moves into
- * `untold_more`, an applying one from `applies` into `applies_more`. `changed` is every card changed since armed, for
- * the mark on an applying card the house's bounded list may not name; the house's list when it is not given.
+ * `untold_more`, an applying one from `applies` into `applies_more`. `changed`, optional, is every card changed since
+ * armed, read only for the mark on an applying card that the house's bounded list may not name; it never enters the
+ * answer's structure, and when it is not given the house's own list is read.
  */
 export function fitRecall(a: Answer, changed: ReadonlySet<string> = new Set(a.house.cards_changed)): { answer: Answer; text: string } {
   let out = { answer: a, text: "" };

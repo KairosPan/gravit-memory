@@ -5,7 +5,7 @@
 // armed in one act, or a retirement retires), edit (the card is written, unarmed, for the owner's editor and a later
 // arm), or reject with a word why. Only the owner's door calls accept, edit and reject (Memory.owner, the command
 // line). Each writes its files first and its line after, as src/owner.ts does.
-import { armedPath, cardStates, lessonPath, parseCard, readBytes, renderCard } from "./cards.js";
+import { armedPath, cardStates, lessonPath, parseCard, readCardFile, renderCard, unreadable, unreadableSentence } from "./cards.js";
 import { checkAgent, readDecisions } from "./decisions.js";
 import { MemoryError } from "./errors.js";
 import { assertHome } from "./home.js";
@@ -98,11 +98,13 @@ export async function reject(home: string, proposal: string, reason: string, now
 /**
  * Neither accept nor edit writes over a lessons/ file the owner holds that is not what was armed: a new lesson's
  * file that has appeared since the proposal, or a card's working file that differs from its armed copy or was never
- * armed. A file equal to the armed copy, or a retired card's, is written over as proposed.
+ * armed, or one that is a directory or cannot be read. A file equal to the armed copy, or a retired card's, is written
+ * over as proposed.
  */
 async function keepOwnersFile(home: string, p: ProposalLine): Promise<void> {
-  const bytes = await readBytes(lessonPath(home, p.lesson));
+  const bytes = await readCardFile(lessonPath(home, p.lesson));
   if (bytes === null) return;
+  if (unreadable(bytes)) throw new MemoryError("E_REFUSED", unreadableSentence(p.lesson, bytes, "written over"));
   if (p.what === "new") {
     throw new MemoryError("E_REFUSED", `lesson ${p.lesson} has a file of its own now, lessons/${p.lesson}.md: `
       + "reject this proposal, or arm your own file.");

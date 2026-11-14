@@ -148,6 +148,15 @@ export async function readCardFile(path: string): Promise<CardFile> {
   }
 }
 
+/**
+ * The one sentence for a card whose working file cannot be read, naming the act it stops: "card <id> cannot be
+ * <act>: lessons/<id>.md is a directory, not a card file." (or "cannot be read."). It names no path of the home.
+ */
+export function unreadableSentence(id: string, file: { unreadable: "a directory" | "not readable" }, act: string): string {
+  return `card ${id} cannot be ${act}: lessons/${id}.md ${file.unreadable === "a directory" ? "is a directory, not a card file"
+    : "cannot be read"}.`;
+}
+
 /** Whether a card file read is one that could not be read. */
 export function unreadable(file: CardFile): file is { unreadable: "a directory" | "not readable" } {
   return file !== null && !Buffer.isBuffer(file);

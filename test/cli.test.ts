@@ -316,7 +316,7 @@ test("an armed card whose working file is a directory: arm refuses in plain word
   const r = fakeIo({ isTTY: true, answers: ["discard", "yes"] });
   expect(await runCli(["review", "--home", home], r, deps)).toBe(0);
   expect(r.errors()).toBe("");
-  expect(r.printed().split("\n").filter((l) => l.includes(ID) && l.includes("cannot be read"))).toHaveLength(1);
+  expect(r.printed().split("\n").filter((l) => l.includes(ID) && l.includes("is a directory, not a card file."))).toHaveLength(1);
   expect(r.asked).toHaveLength(2);
   expect(r.asked[0]).toContain("+ No new position in a name that ran 30% in five sessions.");
   expect(r.asked[1]).toContain("Type yes to discard the edit of second-look: ");
@@ -799,4 +799,22 @@ test("arm on a broken owner's chain says nothing applies until reseal; reseal sh
   expect(shown).toContain(`"lesson":"${ID}" ,`);
   expect(shown).toContain(`After the reseal these lessons apply: lesson-n, ${ID}, second-look`);
   expect((await cardStates(home)).applying.map((x) => x.id).sort()).toEqual(["lesson-n", ID, "second-look"].sort());
+});
+
+test("review: a proposal whose card's working file is a directory is refused in one line, and the walk goes on", async () => {
+  const second = STAND_IN_CARD.replace(`id: ${ID}`, "id: second-look");
+  await writeCard(home);
+  await writeCard(home, second);
+  await memory.owner.arm(ID);
+  await memory.owner.arm("second-look");
+  await memory.propose("agent-one", { what: "change", lesson: ID, card: { ...card(ID), words: "Filler words, changed." }, reason: "Filler." });
+  await rm(join(home, "lessons", `${ID}.md`));
+  await mkdir(join(home, "lessons", `${ID}.md`));
+  await writeCard(home, second.replace("20%", "30%"));
+
+  const io = fakeIo({ isTTY: true, answers: ["accept", "yes", "skip"] });
+  expect(await runCli(["review", "--home", home], io, deps)).toBe(1);
+  expect(io.errors()).not.toContain("failed:");
+  expect(io.errors()).toContain(`lessons/${ID}.md is a directory, not a card file.`);
+  expect(io.asked.at(-1)).toContain("+ No new position in a name that ran 30% in five sessions.");
 });
