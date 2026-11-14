@@ -1,11 +1,12 @@
 // src/render.ts — a recall's text: its five parts in order, within RECALL_MAX_BYTES
 //
 // Every sentence the renderer writes of its own is a piece of FRAME; what comes from the store (the owner's words, a
-// thesis, a condition, a fact's definition) is quoted with JSON's escapes and labelled. When the text would run
-// over, it yields one step at a time, re-rendering each time: records shrink to their counts and one line a group;
-// theses, conditions and untold cards' definitions are cut short with a mark; like decisions go; the same
-// instrument's go; untold cards go from the end; last, applying cards are shown fewer, caveats before red lines. An
-// applying card's words are never cut, and an applying card goes only when nothing else is left to yield.
+// thesis, a condition, a fact's definition) is quoted with JSON's escapes, every unseen character made visible, and
+// labelled. When the text would run over, it yields one step at a time, re-rendering each time: records shrink to
+// their counts and one line a group; theses, conditions and untold cards' definitions are cut short with a mark; like
+// decisions go; the same instrument's go; untold cards go from the end; last, applying cards are shown fewer, caveats
+// before red lines. An applying card's words are never cut, and an applying card goes only when nothing else is left
+// to yield.
 //
 // The answer's structure is the text's, never more: what the text leaves out is left out of it, what it cuts is cut,
 // a record's case lists hold only the cases the text names (its counts stay whole), and the whole answer is held
@@ -254,7 +255,22 @@ export function short(s: string, cut: boolean): string {
   return cut && chars.length > CUT_TO ? `${chars.slice(0, CUT_TO).join("")}${F.cut}` : s;
 }
 
-/** Store text, quoted: JSON's escapes keep a quote or a newline in it from passing for the renderer's own. */
+/**
+ * Store text, quoted: JSON's escapes keep a quote or a newline in it from passing for the renderer's own, and every
+ * unseen character JSON leaves raw (DEL, the C1 controls, format characters, the line and paragraph separators) is
+ * written as `visible` writes it, so none hides or reorders what a reader is shown.
+ */
 export function quote(s: string): string {
-  return JSON.stringify(s);
+  return visible(JSON.stringify(s));
+}
+
+/** C0 and C1 controls but the newline (tab included), DEL, format characters (bidi, zero-width, BOM), separators. */
+export const UNSEEN = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/** The text with every unseen character written as a visible \uXXXX escape, or \u{XXXXX} above U+FFFF. */
+export function visible(text: string): string {
+  return text.replace(UNSEEN, (ch) => {
+    const cp = ch.codePointAt(0)!;
+    return cp > 0xffff ? `\\u{${cp.toString(16)}}` : `\\u${cp.toString(16).padStart(4, "0")}`;
+  });
 }

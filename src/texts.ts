@@ -3,8 +3,8 @@
 // Some hosts show their model only a tool's text, so each text carries what its structure holds that a model needs.
 // Built as the recall's (src/render.ts): every sentence the renderers write of their own is a piece of T; what comes
 // from the store (the owner's words, a definition, a thesis, a reason, a source's refusal) is quoted with JSON's
-// escapes and labelled, through the recall's own helpers. When a text would run over its cap it yields one step at a
-// time, re-rendering each time, and the first text that fits is the answer.
+// escapes, every unseen character made visible, and labelled, through the recall's own helpers. When a text would run
+// over its cap it yields one step at a time, re-rendering each time, and the first text that fits is the answer.
 //
 // The status's text never holds the words, the definitions or the checks of a card that does not apply: such a card
 // is its id, its state and its fault, whatever Status it is handed. A changed card applies as armed, and its content
@@ -51,9 +51,10 @@ const T = {
   noSource: "no price source is set.",
   lastAsked: "last asked",
   answered: "answered",
-  unanswered: "did not answer",
   refusals: "refusals:",
-  neverAsked: "not asked yet.",
+  neverAsked: "never asked.",
+  lastRunAt: "the last run, at",
+  askedNothing: "asked the source nothing.",
   // the review
   since: "Since",
   fromStart: "From the start.",
@@ -194,11 +195,22 @@ function renderStatus(v: StatusView, shape: StatusShape): string {
   else if (shape.tags) for (const t of s.tags) out.push(`- ${quote(t.tag)} ${t.count}`);
   else out.push(`- ${s.tags.length} ${T.tagsLeftOut}`);
 
-  out.push(T.pricesHead, s.prices.url === "" ? `- ${T.noSource}` : `- ${T.source} ${quote(s.prices.url)}`);
-  const last = s.prices.last;
-  out.push(last === undefined ? `- ${T.neverAsked}`
-    : `- ${T.lastAsked} ${last.t}, ${last.ok ? T.answered : T.unanswered}, ${T.refusals} ${last.refused}`);
+  out.push(T.pricesHead, ...prices(s.prices));
   return out.join("\n");
+}
+
+/**
+ * The price source and its last asking: with no source, that none is set and nothing more; else when it was last
+ * asked and whether it answered, or that the last run asked it nothing (asked 0). A file v0.1 wrote has no asked,
+ * and is read as a run that asked.
+ */
+function prices(p: Status["prices"]): string[] {
+  if (p.url === "") return [`- ${T.noSource}`];
+  const last = p.last;
+  const when = last === undefined ? T.neverAsked
+    : last.asked === 0 ? `${T.lastRunAt} ${last.t}, ${T.askedNothing}`
+    : `${T.lastAsked} ${last.t}, ${last.ok ? T.answered : `${T.refusals} ${last.refused}`}`;
+  return [`- ${T.source} ${quote(p.url)}`, `- ${when}`];
 }
 
 /** The opening line: how many lessons, how many apply, each chain, the partial last lines. */

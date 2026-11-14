@@ -31,8 +31,11 @@ import { openMemory, type CardRecord, type CardState, type DecisionView, type Fi
   type Review, type Status } from "./index.js";
 import { AGENT_NAME, FACT_NAME, LESSON_ID, REASON_MAX } from "./limits.js";
 import { runMcp } from "./mcp.js";
+import { UNSEEN, visible } from "./render.js";
 import { ACTIONS } from "./schema.js";
 import type { Card, Deps, ProposalLine } from "./types.js";
+
+export { visible } from "./render.js";
 
 /**
  * The terminal: `columns` its width now, read again at every line written or asked (the real one is a getter over
@@ -82,17 +85,6 @@ function usage(): string {
   return ["usage: gravit-memory <command> [--home <path>]", "",
     ...Object.values(COMMANDS).map((c) => `  ${c.usage.padEnd(width)}  ${c.what}`), "",
     "The owner's acts (review, arm, retire, void, reseal) run only at a terminal, and each asks you to type yes."].join("\n");
-}
-
-/** C0 and C1 controls but the newline (tab included), DEL, format characters (bidi, zero-width, BOM), separators. */
-const UNSEEN = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/gu;
-
-/** The text with every unseen character written as a visible \uXXXX escape, or \u{XXXXX} above U+FFFF. */
-export function visible(text: string): string {
-  return text.replace(UNSEEN, (ch) => {
-    const cp = ch.codePointAt(0)!;
-    return cp > 0xffff ? `\\u{${cp.toString(16)}}` : `\\u${cp.toString(16).padStart(4, "0")}`;
-  });
 }
 
 /** A JSON document with every unseen character as JSON's own \uXXXX escape (a surrogate pair above U+FFFF). */
