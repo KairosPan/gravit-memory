@@ -467,3 +467,19 @@ test("a horizon or leg line written by hand that is no measurement is measured a
   expect(typeof k1.change_pct).toBe("number");
   expect(await memory.show(d.id)).toMatchObject({ figures: [k1, expect.anything(), expect.anything(), expect.anything()] });
 });
+
+test("a horizon whose change overflows is not written, stays due, and is not appended again", async () => {
+  await useSource(stub.url, 0);
+  const d = await record(nvda);
+  const amd = await record({ ...nvda, symbol: "AMD" });
+  stub.set("NVDA", cboeAnswer(weekdays("2026-03-02", [1e-200, 1e-200, 1e150, 1e-200, 1e-200, 1e-200, 1e-200])));
+  stub.set("AMD", cboeAnswer(bars));
+  c.set("2026-03-11T12:00:00Z");
+  const first = await run();
+  const second = await run();
+  const lines = await outcomes();
+  expect(lines.filter((l) => l.decision === d.id && l.what === "horizon").map((l) => (l.what === "horizon" ? l.k : 0))).toEqual([5]);
+  expect(lines.filter((l) => l.decision === amd.id && l.what === "horizon").map((l) => (l.what === "horizon" ? l.k : 0))).toEqual([1, 5]);
+  expect(first.stillDue).toBe(1);
+  expect(second).toMatchObject({ measured: 0, stillDue: 1 });
+});

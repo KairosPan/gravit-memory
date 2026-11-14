@@ -26,7 +26,8 @@ export function targetDate(decidedMs: number, m: MarketConfig): string {
 
 /**
  * The lines to append now for decision d, in order: the price leg when the decision has a price and no leg was
- * taken, then each configured horizon not yet measured whose bar the series holds. A day 0 the series no longer
+ * taken, then each configured horizon not yet measured whose bar the series holds and whose change is a finite number
+ * (one that overflows is written at no run, and stays due). A day 0 the series no longer
  * reaches is the one "closed" line. A decision with a "closed" line, or with nothing left to measure, gets none.
  */
 export function measure(d: DecisionLine, m: MarketConfig, series: Series, bench: { symbol: string; series: Series } | null,
@@ -61,6 +62,7 @@ export function measure(d: DecisionLine, m: MarketConfig, series: Series, bench:
     const dayK = bars[i0 + k];
     if (!dayK) continue;
     const s = dayK.close / day0.close - 1;
+    if (!Number.isFinite(round2(s * 100))) continue;              // a change that overflows is no measurement: it stays due
     const line: Horizon = { what: "horizon", k, day0: day0.date, day0_close: day0.close, date: dayK.date, close: dayK.close,
       change_pct: round2(s * 100), ...read };
     const b0 = benchBars?.get(day0.date), bk = benchBars?.get(dayK.date);
