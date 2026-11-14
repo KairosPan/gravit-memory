@@ -32,7 +32,7 @@ export const INSTRUCTIONS = `gravit-memory is the owner's record of investing de
 - You cannot arm, change or retire a lesson. Propose one with memory_propose; the owner confirms at their own terminal.`;
 
 /** The package's version, which the server gives as its own; a test holds it equal to package.json's. */
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 /** What a bug answers in place of its message, so no stack or path of the machine reaches the asker. */
 const INTERNAL = "gravit-memory failed inside and gave no answer; the call may be tried again.";

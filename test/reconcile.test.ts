@@ -99,12 +99,12 @@ test("a second reconcile measures only what came due", async () => {
 
 test("an A share past the range is closed, and not asked again", async () => {
   await useSource(stub.url, 0);
-  await record({ ...nvda, symbol: "sh600000", market: "CN", decided_at: "2025-01-06T03:00:00.000Z" });
-  stub.set("sh600000", chinaAnswer(bars));
+  await record({ ...nvda, symbol: "600000", market: "CN", decided_at: "2025-01-06T03:00:00.000Z" });
+  stub.set("600000", chinaAnswer(bars));
   c.set("2026-03-11T12:00:00Z");
   expect(await run()).toMatchObject({ measured: 0, closed: 1, stillDue: 0 });
   expect(await outcomes()).toEqual([expect.objectContaining({ what: "closed", reason: "not measurable from this source" })]);
-  expect(symbolsAsked()).toEqual(["sh600000"]);                                    // CN names no benchmark
+  expect(symbolsAsked()).toEqual(["600000"]);                                    // CN names no benchmark
   await run();
   await run();
   expect(stub.requests).toHaveLength(1);

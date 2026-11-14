@@ -1,6 +1,6 @@
 {
   "name": "gravit-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An investing memory any agent can connect to: decisions registered before their outcome, the owner's lessons, reconciled against prices.",
   "license": "Apache-2.0",
   "type": "module",

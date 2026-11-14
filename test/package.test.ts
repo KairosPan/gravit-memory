@@ -3,9 +3,12 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { expect, test } from "vitest";
-import { TOOL_NAMES } from "../src/mcp.js";
-import { STAND_IN_CARD } from "./helpers.js";
+import { openMemory } from "../src/index.js";
+import { TOOL_NAMES, buildServer } from "../src/mcp.js";
+import { STAND_IN_CARD, tempHome } from "./helpers.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const COMMANDS = ["init", "status", "lessons", "show", "review", "arm", "retire", "void", "reconcile", "verify", "reseal", "mcp"];
@@ -86,4 +89,32 @@ test("the README connects an agent through the installed command, and pins the n
   expect(readme).toContain("gravit-memory mcp --as <name>");
   expect(readme).toContain('"command": "gravit-memory"');
   for (const npx of readme.match(/npx[^\n`]*github:KairosPan\/gravit-memory[^\s"`]*/g) ?? []) expect(npx, npx).toContain("#<ref>");
+});
+
+test("an A share is six digits wherever one is shown", async () => {
+  for (const f of await trackedFiles()) {
+    const text = await readIfThere(f);
+    if (text === null) continue;
+    expect(text, f).not.toMatch(/\bs[hz]\d{6}\b/);
+  }
+});
+
+test("the version is 0.2.0 everywhere it is said", async () => {
+  const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8")) as { version?: string };
+  expect(pkg.version).toBe("0.2.0");
+  const lock = JSON.parse(await readFile(join(ROOT, "package-lock.json"), "utf8")) as
+    { version?: string; packages?: Record<string, { version?: string }> };
+  expect(lock.version).toBe("0.2.0");
+  expect(lock.packages?.[""]?.version).toBe("0.2.0");
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  const server = buildServer(openMemory(await tempHome()), "agent-one");
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await server.connect(serverSide);
+  await client.connect(clientSide);
+  try {
+    expect(client.getServerVersion()).toMatchObject({ name: "gravit-memory", version: "0.2.0" });
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });

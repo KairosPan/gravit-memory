@@ -220,8 +220,9 @@ A refusal is `{ "ok": false, "refusal": { "message": "…" } }` (or `{ "ok": fal
 reported refused and asked again at the next reconcile. Anything else is reported as not an answer of daily bars.
 
 When the bars a source gives no longer reach a decision's day 0, the decision is closed as "not measurable from
-this source" and is not asked again. An A share (`venue: "china"`) is read a year at a time, about 250 daily bars, so
-it is measurable for about a year after its decision; a decision reconciled later than that is closed so.
+this source" and is not asked again. An A share (`venue: "china"`) is named by its six digits, as `600000`, and is
+read a year at a time, about 250 daily bars, so it is measurable for about a year after its decision; a decision
+reconciled later than that is closed so.
 
 A reconcile is not run sooner than an interval after the last one that asked the source: `prices.every_minutes` in
 `config.json`, a whole number of minutes from 0 to 1,440, 60 when the key is absent, and 0 for no interval. A run

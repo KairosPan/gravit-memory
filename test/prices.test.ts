@@ -25,11 +25,11 @@ test("a US share is asked by venue, day bars, latest 750", async () => {
 
 test("an A share is asked by range alone", async () => {
   const stub = await candleStub();
-  stub.set("sh600000", chinaAnswer(bars));
-  const got = await ask(configAt(stub.url), "CN", "sh600000", { limit: 5000 });
+  stub.set("600000", chinaAnswer(bars));
+  const got = await ask(configAt(stub.url), "CN", "600000", { limit: 5000 });
   expect(got).toMatchObject({ bars, adjustment: "forward-adjusted (前复权)", source: stub.url });
   const params = stub.requests[0]!.searchParams;
-  expect(Object.fromEntries(params)).toEqual({ venue: "china", symbol: "sh600000", range: "1Y" });
+  expect(Object.fromEntries(params)).toEqual({ venue: "china", symbol: "600000", range: "1Y" });
   for (const key of ["interval", "limit", "since", "before"]) expect(params.has(key)).toBe(false);
 });
 
